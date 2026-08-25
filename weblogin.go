@@ -31,6 +31,24 @@ import (
 // error page, not a fallback.
 var loopbackPorts = []int{8976, 8977}
 
+// The two pages a browser ever sees. Self-contained, styled inline, and
+// served with an explicit charset — without one the em dash renders as
+// mojibake and the last thing a user sees of the login is a glitch.
+const callbackPage = `<!doctype html><html><head><meta charset="utf-8"><title>yas</title><style>
+:root{color-scheme:light dark}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#fafafa;color:#1a1a1a}
+.card{text-align:center;padding:3rem 4rem;border-radius:12px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08),0 8px 24px rgba(0,0,0,.06)}
+.mark{font-size:2.4rem}
+h1{font-size:1.15rem;margin:.8rem 0 .35rem;font-weight:600}
+p{margin:0;color:#666;font-size:.9rem}
+@media (prefers-color-scheme:dark){body{background:#111;color:#eee}.card{background:#1c1c1e;box-shadow:none;border:1px solid #333}p{color:#999}}
+</style></head><body><div class="card"><div class="mark">%s</div><h1>%s</h1><p>%s</p></div></body></html>`
+
+func writeCallbackPage(w http.ResponseWriter, mark, title, detail string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, callbackPage, mark, title, detail)
+}
+
 type webLogin struct {
 	ClientID    string
 	Slug        string
@@ -83,8 +101,7 @@ func (wl *webLogin) Start() error {
 			return
 		}
 		if e := q.Get("error"); e != "" {
-			w.Header().Set("Content-Type", "text/html")
-			_, _ = io.WriteString(w, "<h3>Sign-in was not completed.</h3><p>You can close this tab.</p>")
+			writeCallbackPage(w, "✕", "Sign-in was not completed", "You can close this tab and try again from your terminal.")
 			wl.fail <- fmt.Errorf("github reported %q", e)
 			return
 		}
@@ -93,8 +110,7 @@ func (wl *webLogin) Start() error {
 			http.Error(w, "no code in the callback", http.StatusBadRequest)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = io.WriteString(w, "<h3>Signed in — return to your terminal.</h3><p>You can close this tab.</p>")
+		writeCallbackPage(w, "✓", "You're all set", "You can close this tab and return to your terminal.")
 		wl.codes <- code
 	})}
 	go func() { _ = wl.srv.Serve(wl.ln) }()
@@ -133,12 +149,14 @@ func (wl *webLogin) await(ctx context.Context, what string) (string, error) {
 }
 
 // Authorize is phase one: the plain OAuth authorize URL. A returning user is
-// redirected straight back; a first-time user clicks Authorize once.
+// redirected straight back; a first-time user clicks Authorize once. The URL
+// itself is machine noise and stays off the terminal — a machine that cannot
+// open a browser is what `yas login -device` is for, and the timeout says so.
 func (wl *webLogin) Authorize(ctx context.Context) (string, error) {
 	u := "https://github.com/login/oauth/authorize?client_id=" + wl.ClientID +
 		"&redirect_uri=http%3A%2F%2F127.0.0.1%3A" + strconv.Itoa(wl.port) + "%2Fcallback" +
 		"&state=" + wl.state
-	fmt.Fprintf(wl.Out, "\n  Opening GitHub to sign in (the callback returns to 127.0.0.1:%d):\n\n    %s\n\n", wl.port, u)
+	fmt.Fprintln(wl.Out, "Opening GitHub in your browser to sign in…")
 	wl.open(u)
 	return wl.await(ctx, "the sign-in page")
 }
@@ -150,10 +168,10 @@ func (wl *webLogin) Authorize(ctx context.Context) (string, error) {
 // in phase one.
 func (wl *webLogin) PromptInstall(ctx context.Context) {
 	u := "https://github.com/apps/" + wl.Slug + "/installations/new?state=" + wl.state
-	fmt.Fprintf(wl.Out, "\n  The app is not installed on any of your repositories yet, so boxes\n"+
-		"  cannot reach your code. Pick the repositories your boxes may touch:\n\n    %s\n\n", u)
+	fmt.Fprintln(wl.Out, "First sign-in: choose which repositories your boxes may access.")
+	fmt.Fprintf(wl.Out, "Opening github.com/apps/%s in your browser…\n", wl.Slug)
 	wl.open(u)
 	if _, err := wl.await(ctx, "the install page"); err != nil {
-		fmt.Fprintf(wl.Out, "  (install not confirmed: %v — scratch boxes work either way)\n", err)
+		fmt.Fprintf(wl.Out, "(repository access not confirmed: %v — scratch boxes work either way)\n", err)
 	}
 }

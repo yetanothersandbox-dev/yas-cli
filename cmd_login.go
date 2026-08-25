@@ -65,11 +65,7 @@ func cmdLogin(args []string) error {
 		}
 	}
 
-	if err := config.Save(cfg); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "saved")
-	return nil
+	return config.Save(cfg)
 }
 
 func promptSecret(prompt string) (string, error) {
@@ -105,6 +101,7 @@ func loginPaste(cfg *config.Config) error {
 		return fmt.Errorf("the gateway at %s refused this key: %w", base, err)
 	}
 	cfg.APIKey = v
+	fmt.Fprintln(os.Stderr, "✓ Key saved")
 	return nil
 }
 
@@ -160,12 +157,11 @@ func loginGitHub(cfg *config.Config, clientID string, forceDevice bool) error {
 		}
 	}
 	cfg.APIKey = res.Key
-	what := "signed in"
 	if res.TenantCreated {
-		what = "account created"
+		fmt.Fprintf(os.Stderr, "✓ Account created — signed in as %s\n", res.Login)
+	} else {
+		fmt.Fprintf(os.Stderr, "✓ Signed in as %s\n", res.Login)
 	}
-	fmt.Fprintf(os.Stderr, "%s as %s (tenant %s, key %s)\n", what, res.Login, res.TenantID, res.KeyID)
-	fmt.Fprintln(os.Stderr, "your github access rides server-side from here; the laptop keeps only the yas key")
 	return nil
 }
 
