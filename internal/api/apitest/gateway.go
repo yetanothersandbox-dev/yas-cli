@@ -47,6 +47,9 @@ type Gateway struct {
 	Frames []string
 	// PollPages scripts /events by cursor.
 	PollPages map[int64]string
+	// SignupKey, when set, makes POST /v1/signup answer 201 with this key for
+	// the token "gho_good" and 401 for anything else.
+	SignupKey string
 
 	Requests []string // method+path, in order, for assertions
 }
@@ -96,6 +99,11 @@ func writeErr(w http.ResponseWriter, status int, kind, msg string) {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.record(r)
+	// Signup is the one public route: it is how the first credential is born.
+	if r.URL.Path == "/v1/signup" && r.Method == http.MethodPost {
+		g.signup(w, r)
+		return
+	}
 	// textproto trims trailing whitespace, so an empty key arrives as a bare "Bearer".
 	if auth := r.Header.Get("Authorization"); auth == "" || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer")) == "" {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "no bearer token")
@@ -111,6 +119,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id, rest, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
 		g.byID(w, r, id, rest)
 	}
+}
+
+func (g *Gateway) signup(w http.ResponseWriter, r *http.Request) {
+	if g.SignupKey == "" {
+		writeErr(w, http.StatusForbidden, "signup_disabled", "not scripted")
+		return
+	}
+	var body struct {
+		GitHubToken string `json:"githubToken"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.GitHubToken != "gho_good" {
+		writeErr(w, http.StatusUnauthorized, "github_refused", "bad token")
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"tenantId": "gh-583231", "login": "octocat", "keyId": "ak_test",
+		"key": g.SignupKey, "tenantCreated": true,
+	})
 }
 
 func (g *Gateway) create(w http.ResponseWriter, r *http.Request) {

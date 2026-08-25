@@ -23,6 +23,7 @@ func cmdLogin(args []string) error {
 	anthropic := fs.Bool("anthropic", false, "store an Anthropic API key for new boxes (host-side proxy only; never enters a guest)")
 	github := fs.Bool("github", false, "store a GitHub token for new boxes")
 	openai := fs.Bool("openai", false, "store an OpenAI key for new boxes")
+	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
 	baseURL := fs.String("url", "", "gateway base URL (default "+api.DefaultBaseURL+")")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -56,22 +57,21 @@ func cmdLogin(args []string) error {
 		}
 		cfg.OpenAIKey = v
 	default:
-		v, err := promptSecret("yas API key (yas_sk_...): ")
-		if err != nil {
+		// The front door. Self-serve when the build knows its GitHub app;
+		// paste is always available (-key, or when no app is configured).
+		clientID := githubClientID
+		if v := strings.TrimSpace(os.Getenv("YAS_GITHUB_CLIENT_ID")); v != "" {
+			clientID = v
+		}
+		if *paste || clientID == "" {
+			if err := loginPaste(&cfg); err != nil {
+				return err
+			}
+			break
+		}
+		if err := loginGitHub(&cfg, clientID); err != nil {
 			return err
 		}
-		if !strings.HasPrefix(v, "yas_sk_") {
-			return errors.New("that does not look like a yas key; they start with yas_sk_")
-		}
-		base := cfg.BaseURLResolved()
-		if base == "" {
-			base = api.DefaultBaseURL
-		}
-		probe := &api.Client{BaseURL: base, Key: v}
-		if _, err := probe.List(context.Background()); err != nil {
-			return fmt.Errorf("the gateway at %s refused this key: %w", base, err)
-		}
-		cfg.APIKey = v
 	}
 
 	if err := config.Save(cfg); err != nil {
@@ -93,4 +93,55 @@ func promptSecret(prompt string) (string, error) {
 		return "", errors.New("nothing entered")
 	}
 	return v, nil
+}
+
+// loginPaste is the hand-a-key path: prompt, validate, one real List call
+// before anything is saved.
+func loginPaste(cfg *config.Config) error {
+	v, err := promptSecret("yas API key (yas_sk_...): ")
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(v, "yas_sk_") {
+		return errors.New("that does not look like a yas key; they start with yas_sk_")
+	}
+	base := cfg.BaseURLResolved()
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	probe := &api.Client{BaseURL: base, Key: v}
+	if _, err := probe.List(context.Background()); err != nil {
+		return fmt.Errorf("the gateway at %s refused this key: %w", base, err)
+	}
+	cfg.APIKey = v
+	return nil
+}
+
+// loginGitHub is the self-serve path: device flow, then /v1/signup. The
+// secret arrives once and goes straight into the config file; it is never
+// printed.
+func loginGitHub(cfg *config.Config, clientID string) error {
+	ctx := context.Background()
+	fmt.Fprintln(os.Stderr, "Signing in with GitHub (ctrl-c to abort; `yas login -key` to paste a key instead)")
+	flow := &deviceFlow{ClientID: clientID, Out: os.Stderr}
+	token, err := flow.Run(ctx)
+	if err != nil {
+		return err
+	}
+	base := cfg.BaseURLResolved()
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	cl := &api.Client{BaseURL: base}
+	res, err := cl.Signup(ctx, token)
+	if err != nil {
+		return fmt.Errorf("the gateway refused the signup: %w", err)
+	}
+	cfg.APIKey = res.Key
+	what := "signed in"
+	if res.TenantCreated {
+		what = "account created"
+	}
+	fmt.Fprintf(os.Stderr, "%s as %s (tenant %s, key %s)\n", what, res.Login, res.TenantID, res.KeyID)
+	return nil
 }

@@ -228,3 +228,56 @@ func (c *Client) ExecFollow(ctx context.Context, id string, req ExecRequest, onP
 	defer resp.Body.Close()
 	return readSSE(resp.Body, onPage)
 }
+
+// SignupResult is what /v1/signup hands back — including the ONE copy of the
+// secret that will ever exist.
+type SignupResult struct {
+	TenantID      string `json:"tenantId"`
+	Login         string `json:"login"`
+	KeyID         string `json:"keyId"`
+	Key           string `json:"key"`
+	TenantCreated bool   `json:"tenantCreated"`
+}
+
+// Signup exchanges a GitHub access token for a tenant key. The only client
+// method that sends no Authorization header: it is how the first credential
+// comes to exist.
+func (c *Client) Signup(ctx context.Context, githubToken string) (SignupResult, error) {
+	b, err := json.Marshal(map[string]string{"githubToken": githubToken})
+	if err != nil {
+		return SignupResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(c.BaseURL, "/")+"/v1/signup", bytes.NewReader(b))
+	if err != nil {
+		return SignupResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return SignupResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		ae := &apiError{Status: resp.StatusCode}
+		var wire struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		if json.Unmarshal(raw, &wire) == nil && wire.Error != "" {
+			ae.Kind, ae.Message = wire.Error, wire.Message
+		} else {
+			ae.Message = strings.TrimSpace(string(raw))
+		}
+		return SignupResult{}, ae
+	}
+	var out SignupResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return SignupResult{}, err
+	}
+	if !strings.HasPrefix(out.Key, "yas_sk_") {
+		return SignupResult{}, errors.New("the gateway's signup answer carried no key")
+	}
+	return out, nil
+}
