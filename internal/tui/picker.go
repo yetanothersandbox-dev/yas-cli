@@ -36,6 +36,10 @@ type CreateOpts struct {
 	Vcpus      int
 	DiskMiB    int
 	IdleTtlSec int
+	// Egress is the privacy preset ("" = sealed); Allow is the filtered
+	// mode's comma-separated name list.
+	Egress string
+	Allow  string
 }
 
 const newBoxID = "\x00new"

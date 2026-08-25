@@ -28,6 +28,32 @@ type CreateRequest struct {
 	AnthropicKey string `json:"anthropicKey,omitempty"`
 	GitHubToken  string `json:"githubToken,omitempty"`
 	OpenAIKey    string `json:"openaiKey,omitempty"`
+	// Policy is the box's privacy posture. Absent = sealed (proxy egress,
+	// credentials attached) — exactly what every create was before policies.
+	Policy *Policy `json:"policy,omitempty"`
+}
+
+// Policy mirrors the server's SandboxPolicy.
+type Policy struct {
+	Egress      *EgressPolicy     `json:"egress,omitempty"`
+	Credentials *CredentialPolicy `json:"credentials,omitempty"`
+}
+
+type EgressPolicy struct {
+	Mode    string         `json:"mode,omitempty"` // proxy | filtered | open
+	Allow   []string       `json:"allow,omitempty"`
+	Connect []ConnectEntry `json:"connect,omitempty"`
+}
+
+type ConnectEntry struct {
+	Host  string `json:"host"`
+	Ports []int  `json:"ports,omitempty"`
+}
+
+type CredentialPolicy struct {
+	GitHub    string `json:"github,omitempty"`
+	Anthropic string `json:"anthropic,omitempty"`
+	OpenAI    string `json:"openai,omitempty"`
 }
 
 // SandboxSummary is one row of the gateway's GET /v1/sandboxes. The index

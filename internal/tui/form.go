@@ -31,6 +31,8 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 		{"vcpus", "server default"},
 		{"disk", "server default (MiB)"},
 		{"idle ttl", "server default (sec)"},
+		{"egress", "sealed · filtered · open"},
+		{"allow", "filtered only: github.com,pypi.org"},
 	}
 	inputs := make([]textinput.Model, len(fields))
 	for i, f := range fields {
@@ -69,6 +71,8 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 		Vcpus:      atoiOrZero(fm.inputs[2].Value()),
 		DiskMiB:    atoiOrZero(fm.inputs[3].Value()),
 		IdleTtlSec: atoiOrZero(fm.inputs[4].Value()),
+		Egress:     strings.TrimSpace(fm.inputs[5].Value()),
+		Allow:      strings.TrimSpace(fm.inputs[6].Value()),
 	}, true, nil
 }
 

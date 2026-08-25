@@ -55,9 +55,15 @@ func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
 			if !ok {
 				return "", errQuit
 			}
+			pol, perr := buildPolicy(opts.Egress, opts.Allow, "", false)
+			if perr != nil {
+				suggestion = opts.Name
+				note = perr.Error()
+				continue
+			}
 			id, err := createBox(context.Background(), cl, cfg, createOpts{
 				Name: opts.Name, MemMiB: opts.MemMiB, Vcpus: opts.Vcpus,
-				DiskMiB: opts.DiskMiB, IdleTtlSec: opts.IdleTtlSec,
+				DiskMiB: opts.DiskMiB, IdleTtlSec: opts.IdleTtlSec, Policy: pol,
 			})
 			if err == nil {
 				return id, nil
