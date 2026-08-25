@@ -214,3 +214,19 @@ func TestClientPutUserCredentials(t *testing.T) {
 		t.Fatalf("whoami = %+v, %v", w, err)
 	}
 }
+
+// The install-time client half: a code goes up, a key comes back.
+func TestClientSignupCode(t *testing.T) {
+	gw := apitest.New()
+	gw.SignupKey = "yas_sk_fresh"
+	srv := httptest.NewServer(gw)
+	defer srv.Close()
+	cl := &api.Client{BaseURL: srv.URL}
+	res, err := cl.SignupCode(context.Background(), "good-code")
+	if err != nil || res.Key != "yas_sk_fresh" {
+		t.Fatalf("res = %+v, %v", res, err)
+	}
+	if _, err := cl.SignupCode(context.Background(), "forged"); err == nil || api.ErrorKind(err) != "github_refused" {
+		t.Fatalf("err = %v, want github_refused", err)
+	}
+}

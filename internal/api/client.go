@@ -243,9 +243,13 @@ type SignupResult struct {
 // into the gateway's custody as it does. The only client method that sends
 // no Authorization header: it is how the first credential comes to exist.
 func (c *Client) Signup(ctx context.Context, githubToken, refreshToken string, expiresIn int64) (SignupResult, error) {
-	b, err := json.Marshal(map[string]any{
+	return c.signupBody(ctx, map[string]any{
 		"githubToken": githubToken, "refreshToken": refreshToken, "expiresIn": expiresIn,
 	})
+}
+
+func (c *Client) signupBody(ctx context.Context, body map[string]any) (SignupResult, error) {
+	b, err := json.Marshal(body)
 	if err != nil {
 		return SignupResult{}, err
 	}
@@ -282,6 +286,13 @@ func (c *Client) Signup(ctx context.Context, githubToken, refreshToken string, e
 		return SignupResult{}, errors.New("the gateway's signup answer carried no key")
 	}
 	return out, nil
+}
+
+// SignupCode is the install-time flow's half of Signup: the CLI hands over
+// the authorization code and the gateway does the exchange — the client
+// secret never travels.
+func (c *Client) SignupCode(ctx context.Context, code string) (SignupResult, error) {
+	return c.signupBody(ctx, map[string]any{"code": code})
 }
 
 // Whoami is GET /v1/user: the account, and which credentials the gateway

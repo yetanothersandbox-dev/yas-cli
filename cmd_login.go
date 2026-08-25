@@ -24,6 +24,7 @@ func cmdLogin(args []string) error {
 	github := fs.Bool("github", false, "store a GitHub token for new boxes")
 	openai := fs.Bool("openai", false, "store an OpenAI key for new boxes")
 	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
+	device := fs.Bool("device", false, "use the GitHub device flow (for SSH sessions and browserless machines)")
 	baseURL := fs.String("url", "", "gateway base URL (default "+api.DefaultBaseURL+")")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -59,7 +60,7 @@ func cmdLogin(args []string) error {
 			}
 			break
 		}
-		if err := loginGitHub(&cfg, clientID); err != nil {
+		if err := loginGitHub(&cfg, clientID, *device); err != nil {
 			return err
 		}
 	}
@@ -107,31 +108,52 @@ func loginPaste(cfg *config.Config) error {
 	return nil
 }
 
-// loginGitHub is the self-serve path: device flow, install prompt, then
-// /v1/signup — which is also the CUSTODY handover: the GitHub token pair
-// goes to the gateway and is discarded here. The yas key arrives once and
-// goes straight into the config file; nothing is ever printed.
-func loginGitHub(cfg *config.Config, clientID string) error {
+// loginGitHub is the self-serve path, and its DEFAULT is one GitHub
+// interaction: the install page doubles as the sign-in (the app requests
+// user authorization during installation), the browser bounces back to a
+// loopback port with a code, and the gateway exchanges it. The device flow
+// remains behind -device — and as the automatic fallback when no loopback
+// port is free — for terminals whose browser is on another machine.
+//
+// Either way this is the CUSTODY handover: the GitHub credential goes to
+// the gateway and is discarded here. The yas key arrives once and goes
+// straight into the config file; nothing is ever printed.
+func loginGitHub(cfg *config.Config, clientID string, forceDevice bool) error {
 	ctx := context.Background()
-	fmt.Fprintln(os.Stderr, "Signing in with GitHub (ctrl-c to abort; `yas login -key` to paste a key instead)")
-	flow := &deviceFlow{ClientID: clientID, Out: os.Stderr}
-	pair, err := flow.Run(ctx)
-	if err != nil {
-		return err
-	}
 	slug := githubAppSlug
 	if v := strings.TrimSpace(os.Getenv("YAS_GITHUB_APP_SLUG")); v != "" {
 		slug = v
 	}
-	flow.promptInstall(ctx, pair.AccessToken, slug, "", os.Stdin)
 	base := cfg.BaseURLResolved()
 	if base == "" {
 		base = api.DefaultBaseURL
 	}
 	cl := &api.Client{BaseURL: base}
-	res, err := cl.Signup(ctx, pair.AccessToken, pair.RefreshToken, pair.ExpiresIn)
-	if err != nil {
-		return fmt.Errorf("the gateway refused the signup: %w", err)
+
+	var res api.SignupResult
+	webErr := errors.New("no app slug in this build")
+	if !forceDevice && slug != "" {
+		var code string
+		wl := &webLogin{Slug: slug, Out: os.Stderr}
+		code, webErr = wl.Run(ctx)
+		if webErr == nil {
+			res, webErr = cl.SignupCode(ctx, code)
+		}
+	}
+	if forceDevice || webErr != nil {
+		if !forceDevice {
+			fmt.Fprintf(os.Stderr, "falling back to the device flow (%v)\n", webErr)
+		}
+		fmt.Fprintln(os.Stderr, "Signing in with GitHub (ctrl-c to abort; `yas login -key` to paste a key instead)")
+		flow := &deviceFlow{ClientID: clientID, Out: os.Stderr}
+		pair, err := flow.Run(ctx)
+		if err != nil {
+			return err
+		}
+		flow.promptInstall(ctx, pair.AccessToken, slug, "", os.Stdin)
+		if res, err = cl.Signup(ctx, pair.AccessToken, pair.RefreshToken, pair.ExpiresIn); err != nil {
+			return fmt.Errorf("the gateway refused the signup: %w", err)
+		}
 	}
 	cfg.APIKey = res.Key
 	what := "signed in"

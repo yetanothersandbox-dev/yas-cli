@@ -138,7 +138,8 @@ func (g *Gateway) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body map[string]any
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body["githubToken"] != "gho_good" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil ||
+		(body["githubToken"] != "gho_good" && body["code"] != "good-code") {
 		writeErr(w, http.StatusUnauthorized, "github_refused", "bad token")
 		return
 	}
