@@ -90,7 +90,7 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 	if err := cl.Create(ctx, req); err != nil {
 		switch {
 		case api.ErrorKind(err) == "conflict":
-			return "", fmt.Errorf("the name %q is already taken — box names are global, even across accounts; pick another", id)
+			return "", fmt.Errorf("the name %q is unavailable; pick another", id)
 		case api.IsQuota(err):
 			return "", fmt.Errorf("your quota is full: %w — `yas list` and `yas rm` something", err)
 		case api.IsNoCapacity(err):

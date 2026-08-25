@@ -66,7 +66,7 @@ func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
 				return "", err
 			}
 			suggestion = names.Generate()
-			note = fmt.Sprintf("%q is taken (box names are global) — try %s?", opts.Name, suggestion)
+			note = fmt.Sprintf("%q is unavailable — try %s?", opts.Name, suggestion)
 		}
 	default:
 		return "", errQuit
