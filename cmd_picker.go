@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/Gilbert09/yas/clients/yas/internal/api"
 	"github.com/Gilbert09/yas/clients/yas/internal/config"
@@ -42,17 +43,31 @@ func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
 	case "connect":
 		return res.ID, nil
 	case "form":
-		opts, ok, err := tui.RunCreateForm(names.Generate())
-		if err != nil {
-			return "", err
+		// The create loop: a refused name returns to the form with the
+		// refusal shown and everything else kept, rather than ending the
+		// program with the user's input on the floor.
+		suggestion, note := names.Generate(), ""
+		for {
+			opts, ok, err := tui.RunCreateForm(suggestion, note)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", errQuit
+			}
+			id, err := createBox(context.Background(), cl, cfg, createOpts{
+				Name: opts.Name, MemMiB: opts.MemMiB, Vcpus: opts.Vcpus,
+				DiskMiB: opts.DiskMiB, IdleTtlSec: opts.IdleTtlSec,
+			})
+			if err == nil {
+				return id, nil
+			}
+			if api.ErrorKind(err) != "conflict" {
+				return "", err
+			}
+			suggestion = names.Generate()
+			note = fmt.Sprintf("%q is taken (box names are global) — try %s?", opts.Name, suggestion)
 		}
-		if !ok {
-			return "", errQuit
-		}
-		return createBox(context.Background(), cl, cfg, createOpts{
-			Name: opts.Name, MemMiB: opts.MemMiB, Vcpus: opts.Vcpus,
-			DiskMiB: opts.DiskMiB, IdleTtlSec: opts.IdleTtlSec,
-		})
 	default:
 		return "", errQuit
 	}

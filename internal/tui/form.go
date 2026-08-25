@@ -21,8 +21,10 @@ var (
 
 // RunCreateForm collects a new box's shape. Every field is optional: enter on
 // an untouched form creates with the generated name and the server defaults,
-// which is the right default for "just give me a box".
-func RunCreateForm(suggestedName string) (CreateOpts, bool, error) {
+// which is the right default for "just give me a box". A non-empty note is
+// shown as a warning — it is how a refused create (name taken) comes BACK to
+// the form instead of ending the program with the user's input on the floor.
+func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 	fields := []struct{ label, placeholder string }{
 		{"name", suggestedName},
 		{"memory", "server default (MiB)"},
@@ -37,6 +39,9 @@ func RunCreateForm(suggestedName string) (CreateOpts, bool, error) {
 		ti.Placeholder = f.placeholder
 		ti.PlaceholderStyle = faintStyle
 		ti.CharLimit = 64
+		// Width is load-bearing: textinput truncates the PLACEHOLDER to it,
+		// and the zero value renders exactly one character.
+		ti.Width = 28
 		ti.Cursor.Style = markerStyle
 		inputs[i] = ti
 	}
@@ -45,7 +50,7 @@ func RunCreateForm(suggestedName string) (CreateOpts, bool, error) {
 	for i, f := range fields {
 		labels[i] = f.label
 	}
-	m := formModel{labels: labels, inputs: inputs, suggested: suggestedName}
+	m := formModel{labels: labels, inputs: inputs, suggested: suggestedName, note: note}
 	out, err := tea.NewProgram(m).Run()
 	if err != nil {
 		return CreateOpts{}, false, err
@@ -80,6 +85,7 @@ type formModel struct {
 	inputs    []textinput.Model
 	focus     int
 	suggested string
+	note      string
 	cancelled bool
 }
 
@@ -121,6 +127,9 @@ func (m formModel) refocus() (tea.Model, tea.Cmd) {
 func (m formModel) View() string {
 	var rows []string
 	rows = append(rows, brandStyle.Render("yas")+dimStyle.Render("  ·  new box"), "")
+	if m.note != "" {
+		rows = append(rows, warnStyle.Render(m.note), "")
+	}
 	for i, in := range m.inputs {
 		marker := "  "
 		label := labelStyle.Render(m.labels[i])
