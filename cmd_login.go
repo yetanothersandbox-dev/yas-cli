@@ -39,23 +39,13 @@ func cmdLogin(args []string) error {
 
 	switch {
 	case *anthropic:
-		v, err := promptSecret("Anthropic API key: ")
-		if err != nil {
-			return err
-		}
-		cfg.AnthropicKey = v
+		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
 	case *github:
-		v, err := promptSecret("GitHub token: ")
-		if err != nil {
-			return err
-		}
-		cfg.GitHubToken = v
+		// The github token is no longer pasted at all: it comes from the
+		// GitHub sign-in and lives server-side.
+		return errors.New("github access now comes from `yas login` itself (the GitHub sign-in); there is nothing to paste")
 	case *openai:
-		v, err := promptSecret("OpenAI API key: ")
-		if err != nil {
-			return err
-		}
-		cfg.OpenAIKey = v
+		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
 	default:
 		// The front door. Self-serve when the build knows its GitHub app;
 		// paste is always available (-key, or when no app is configured).
@@ -117,23 +107,29 @@ func loginPaste(cfg *config.Config) error {
 	return nil
 }
 
-// loginGitHub is the self-serve path: device flow, then /v1/signup. The
-// secret arrives once and goes straight into the config file; it is never
-// printed.
+// loginGitHub is the self-serve path: device flow, install prompt, then
+// /v1/signup — which is also the CUSTODY handover: the GitHub token pair
+// goes to the gateway and is discarded here. The yas key arrives once and
+// goes straight into the config file; nothing is ever printed.
 func loginGitHub(cfg *config.Config, clientID string) error {
 	ctx := context.Background()
 	fmt.Fprintln(os.Stderr, "Signing in with GitHub (ctrl-c to abort; `yas login -key` to paste a key instead)")
 	flow := &deviceFlow{ClientID: clientID, Out: os.Stderr}
-	token, err := flow.Run(ctx)
+	pair, err := flow.Run(ctx)
 	if err != nil {
 		return err
 	}
+	slug := githubAppSlug
+	if v := strings.TrimSpace(os.Getenv("YAS_GITHUB_APP_SLUG")); v != "" {
+		slug = v
+	}
+	flow.promptInstall(ctx, pair.AccessToken, slug, "", os.Stdin)
 	base := cfg.BaseURLResolved()
 	if base == "" {
 		base = api.DefaultBaseURL
 	}
 	cl := &api.Client{BaseURL: base}
-	res, err := cl.Signup(ctx, token)
+	res, err := cl.Signup(ctx, pair.AccessToken, pair.RefreshToken, pair.ExpiresIn)
 	if err != nil {
 		return fmt.Errorf("the gateway refused the signup: %w", err)
 	}
@@ -143,5 +139,35 @@ func loginGitHub(cfg *config.Config, clientID string) error {
 		what = "account created"
 	}
 	fmt.Fprintf(os.Stderr, "%s as %s (tenant %s, key %s)\n", what, res.Login, res.TenantID, res.KeyID)
+	fmt.Fprintln(os.Stderr, "your github access rides server-side from here; the laptop keeps only the yas key")
+	return nil
+}
+
+// storeProviderKey sends a provider key into the gateway's custody. It needs
+// a working yas key first — custody hangs off the user account.
+func storeProviderKey(cfg config.Config, prompt, which string) error {
+	key := cfg.APIKeyResolved()
+	if key == "" {
+		return errors.New("no API key yet; run `yas login` first — provider keys are stored on your account")
+	}
+	v, err := promptSecret(prompt)
+	if err != nil {
+		return err
+	}
+	base := cfg.BaseURLResolved()
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	cl := &api.Client{BaseURL: base, Key: key}
+	var anthropic, openai *string
+	if which == "anthropic" {
+		anthropic = &v
+	} else {
+		openai = &v
+	}
+	if err := cl.PutUserCredentials(context.Background(), anthropic, openai); err != nil {
+		return fmt.Errorf("the gateway refused to store it: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "stored server-side; new boxes get it automatically")
 	return nil
 }

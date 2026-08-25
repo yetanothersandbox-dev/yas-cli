@@ -239,11 +239,13 @@ type SignupResult struct {
 	TenantCreated bool   `json:"tenantCreated"`
 }
 
-// Signup exchanges a GitHub access token for a tenant key. The only client
-// method that sends no Authorization header: it is how the first credential
-// comes to exist.
-func (c *Client) Signup(ctx context.Context, githubToken string) (SignupResult, error) {
-	b, err := json.Marshal(map[string]string{"githubToken": githubToken})
+// Signup exchanges a GitHub token pair for a tenant key, handing the pair
+// into the gateway's custody as it does. The only client method that sends
+// no Authorization header: it is how the first credential comes to exist.
+func (c *Client) Signup(ctx context.Context, githubToken, refreshToken string, expiresIn int64) (SignupResult, error) {
+	b, err := json.Marshal(map[string]any{
+		"githubToken": githubToken, "refreshToken": refreshToken, "expiresIn": expiresIn,
+	})
 	if err != nil {
 		return SignupResult{}, err
 	}
@@ -280,4 +282,72 @@ func (c *Client) Signup(ctx context.Context, githubToken string) (SignupResult, 
 		return SignupResult{}, errors.New("the gateway's signup answer carried no key")
 	}
 	return out, nil
+}
+
+// Whoami is GET /v1/user: the account, and which credentials the gateway
+// holds — presence only.
+type Whoami struct {
+	TenantID string `json:"tenantId"`
+	Login    string `json:"login"`
+	Name     string `json:"name"`
+	GitHub   struct {
+		Connected bool   `json:"connected"`
+		Login     string `json:"login"`
+	} `json:"github"`
+	AnthropicKey bool `json:"anthropicKey"`
+	OpenAIKey    bool `json:"openaiKey"`
+}
+
+func (c *Client) Whoami(ctx context.Context) (Whoami, error) {
+	var w Whoami
+	err := c.do(ctx, http.MethodGet, "/v1/user", nil, &w)
+	return w, err
+}
+
+// PutUserCredentials stores provider keys server-side. Nil = leave alone;
+// pointer-to-empty = clear.
+func (c *Client) PutUserCredentials(ctx context.Context, anthropic, openai *string) error {
+	body := map[string]any{}
+	if anthropic != nil {
+		body["anthropicKey"] = *anthropic
+	}
+	if openai != nil {
+		body["openaiKey"] = *openai
+	}
+	return c.do(ctx, http.MethodPut, "/v1/user/credentials", body, nil)
+}
+
+// KeyRow is one listed key. No secret: it is not stored anywhere.
+type KeyRow struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	CreatedAt time.Time  `json:"createdAt"`
+	Live      bool       `json:"live"`
+	Current   bool       `json:"current"`
+	RevokedAt *time.Time `json:"revokedAt"`
+}
+
+func (c *Client) Keys(ctx context.Context) ([]KeyRow, error) {
+	var out struct {
+		Keys []KeyRow `json:"keys"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/keys", nil, &out)
+	return out.Keys, err
+}
+
+// CreateKey mints a named service key on the caller's own tenant and returns
+// the one copy of its secret that will ever exist.
+func (c *Client) CreateKey(ctx context.Context, name string) (id, secret string, err error) {
+	var out struct {
+		KeyID string `json:"keyId"`
+		Key   string `json:"key"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/keys", map[string]string{"name": name}, &out); err != nil {
+		return "", "", err
+	}
+	return out.KeyID, out.Key, nil
+}
+
+func (c *Client) RevokeKey(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/keys/"+id, nil, nil)
 }

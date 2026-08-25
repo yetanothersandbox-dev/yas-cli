@@ -50,6 +50,13 @@ type Gateway struct {
 	// SignupKey, when set, makes POST /v1/signup answer 201 with this key for
 	// the token "gho_good" and 401 for anything else.
 	SignupKey string
+	// SignupSaw records the last signup body, so a test can assert the
+	// refresh half of the pair actually travelled.
+	SignupSaw map[string]any
+	// UserCreds records the last PUT /v1/user/credentials body.
+	UserCreds map[string]any
+	// KeyRows backs /v1/keys; Add rows or let POST create them.
+	KeyRows []map[string]any
 
 	Requests []string // method+path, in order, for assertions
 }
@@ -104,6 +111,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.signup(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/v1/user") || strings.HasPrefix(r.URL.Path, "/v1/keys") {
+		g.userAPI(w, r)
+		return
+	}
 	// textproto trims trailing whitespace, so an empty key arrives as a bare "Bearer".
 	if auth := r.Header.Get("Authorization"); auth == "" || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer")) == "" {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "no bearer token")
@@ -126,18 +137,81 @@ func (g *Gateway) signup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "signup_disabled", "not scripted")
 		return
 	}
-	var body struct {
-		GitHubToken string `json:"githubToken"`
-	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.GitHubToken != "gho_good" {
+	var body map[string]any
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body["githubToken"] != "gho_good" {
 		writeErr(w, http.StatusUnauthorized, "github_refused", "bad token")
 		return
 	}
+	g.mu.Lock()
+	g.SignupSaw = body
+	g.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"tenantId": "gh-583231", "login": "octocat", "keyId": "ak_test",
 		"key": g.SignupKey, "tenantCreated": true,
 	})
+}
+
+// userAPI is the account surface, authenticated like everything else.
+func (g *Gateway) userAPI(w http.ResponseWriter, r *http.Request) {
+	if auth := r.Header.Get("Authorization"); auth == "" || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer")) == "" {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "no bearer token")
+		return
+	}
+	switch {
+	case r.URL.Path == "/v1/user" && r.Method == http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tenantId": "gh-583231", "login": "octocat",
+			"github": map[string]any{"connected": true, "login": "octocat"},
+		})
+	case r.URL.Path == "/v1/user/credentials" && r.Method == http.MethodPut:
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		g.mu.Lock()
+		g.UserCreds = body
+		g.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/v1/keys" && r.Method == http.MethodGet:
+		g.mu.Lock()
+		rows := append([]map[string]any(nil), g.KeyRows...)
+		g.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": rows})
+	case r.URL.Path == "/v1/keys" && r.Method == http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Name == "" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "name is required")
+			return
+		}
+		g.mu.Lock()
+		id := "ak_" + strconv.Itoa(len(g.KeyRows)+1)
+		g.KeyRows = append(g.KeyRows, map[string]any{
+			"id": id, "name": body.Name, "createdAt": time.Now().UTC(), "live": true,
+		})
+		g.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"keyId": id, "name": body.Name, "key": "yas_sk_service"})
+	case strings.HasPrefix(r.URL.Path, "/v1/keys/") && r.Method == http.MethodDelete:
+		id := strings.TrimPrefix(r.URL.Path, "/v1/keys/")
+		g.mu.Lock()
+		found := false
+		for _, row := range g.KeyRows {
+			if row["id"] == id {
+				row["live"] = false
+				found = true
+			}
+		}
+		g.mu.Unlock()
+		if !found {
+			writeErr(w, http.StatusNotFound, "not_found", "no such key")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeErr(w, http.StatusNotFound, "not_found", "no such route in the fake")
+	}
 }
 
 func (g *Gateway) create(w http.ResponseWriter, r *http.Request) {

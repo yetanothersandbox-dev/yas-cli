@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,10 +24,24 @@ import (
 // device-flow app has only a PUBLIC client id, which is why it is safe to
 // bake into this binary.
 
-// githubClientID is the OAuth app this build fronts. Stamped by the Makefile;
-// YAS_GITHUB_CLIENT_ID overrides for development against another app. Empty
-// means this build cannot self-serve and login says so.
+// githubClientID is the GitHub App this build fronts. Stamped by the
+// Makefile; YAS_GITHUB_CLIENT_ID overrides for development against another
+// app. Empty means this build cannot self-serve and login says so.
 var githubClientID = ""
+
+// githubAppSlug names the app's public install page,
+// github.com/apps/<slug>/installations/new. Stamped beside the client id;
+// empty just skips the install prompt.
+var githubAppSlug = ""
+
+// TokenPair is everything the device flow produced. The pair goes to the
+// gateway's custody at signup and is discarded here — the CLI never stores
+// a GitHub token.
+type TokenPair struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int64 // seconds; 0 = does not expire
+}
 
 // deviceFlow carries the endpoints so tests can point them at a fake GitHub.
 type deviceFlow struct {
@@ -70,10 +85,10 @@ func (d *deviceFlow) post(ctx context.Context, rawURL string, form url.Values, o
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
 
-// Run performs the whole flow and returns the GitHub access token.
-func (d *deviceFlow) Run(ctx context.Context) (string, error) {
+// Run performs the whole flow and returns the token pair.
+func (d *deviceFlow) Run(ctx context.Context) (TokenPair, error) {
 	if d.ClientID == "" {
-		return "", errors.New("this build has no GitHub app configured; set YAS_GITHUB_CLIENT_ID or paste a key instead")
+		return TokenPair{}, errors.New("this build has no GitHub app configured; set YAS_GITHUB_CLIENT_ID or paste a key instead")
 	}
 	if d.DeviceCodeURL == "" {
 		d.DeviceCodeURL = "https://github.com/login/device/code"
@@ -94,10 +109,10 @@ func (d *deviceFlow) Run(ctx context.Context) (string, error) {
 	// and a signup that asked for repo access would be asking for something
 	// it has no use for and the user has every reason to refuse.
 	if err := d.post(ctx, d.DeviceCodeURL, url.Values{"client_id": {d.ClientID}}, &code); err != nil {
-		return "", fmt.Errorf("asking github for a device code: %w", err)
+		return TokenPair{}, fmt.Errorf("asking github for a device code: %w", err)
 	}
 	if code.Error != "" || code.DeviceCode == "" {
-		return "", fmt.Errorf("github refused to start the sign-in (%s); is the app's device flow enabled?", code.Error)
+		return TokenPair{}, fmt.Errorf("github refused to start the sign-in (%s); is the app's device flow enabled?", code.Error)
 	}
 
 	fmt.Fprintf(d.Out, "\n  Visit  %s\n  Enter  %s\n\n", code.VerificationURI, code.UserCode)
@@ -114,12 +129,14 @@ func (d *deviceFlow) Run(ctx context.Context) (string, error) {
 	deadline := time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
 	for {
 		if code.ExpiresIn > 0 && time.Now().After(deadline) {
-			return "", errors.New("the sign-in code expired before it was approved; run `yas login` again")
+			return TokenPair{}, errors.New("the sign-in code expired before it was approved; run `yas login` again")
 		}
 		d.sleep(interval)
 		var tok struct {
-			AccessToken string `json:"access_token"`
-			Error       string `json:"error"`
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int64  `json:"expires_in"`
+			Error        string `json:"error"`
 		}
 		err := d.post(ctx, d.TokenURL, url.Values{
 			"client_id":   {d.ClientID},
@@ -127,26 +144,74 @@ func (d *deviceFlow) Run(ctx context.Context) (string, error) {
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		}, &tok)
 		if err != nil {
-			return "", fmt.Errorf("polling github: %w", err)
+			return TokenPair{}, fmt.Errorf("polling github: %w", err)
 		}
 		switch tok.Error {
 		case "":
 			if tok.AccessToken == "" {
-				return "", errors.New("github answered without a token or an error")
+				return TokenPair{}, errors.New("github answered without a token or an error")
 			}
-			return tok.AccessToken, nil
+			return TokenPair{AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, ExpiresIn: tok.ExpiresIn}, nil
 		case "authorization_pending":
 			// The human has not clicked yet. The normal case; poll on.
 		case "slow_down":
 			// GitHub names the penalty in RFC 8628: add five seconds.
 			interval += 5 * time.Second
 		case "expired_token":
-			return "", errors.New("the sign-in code expired before it was approved; run `yas login` again")
+			return TokenPair{}, errors.New("the sign-in code expired before it was approved; run `yas login` again")
 		case "access_denied":
-			return "", errors.New("the sign-in was declined")
+			return TokenPair{}, errors.New("the sign-in was declined")
 		default:
-			return "", fmt.Errorf("github ended the sign-in: %s", tok.Error)
+			return TokenPair{}, fmt.Errorf("github ended the sign-in: %s", tok.Error)
 		}
+	}
+}
+
+// promptInstall is the non-lazy half of onboarding: if the app is installed
+// on none of the user's repositories, the boxes it creates can reach none of
+// them, so the moment to say so is NOW — at sign-in, with the install page
+// open — rather than as a mysterious git failure inside a sandbox later.
+// Best-effort throughout: any error skips the prompt rather than blocking a
+// login on a courtesy.
+func (d *deviceFlow) promptInstall(ctx context.Context, token, slug string, apiBase string, stdin io.Reader) {
+	if slug == "" {
+		return
+	}
+	if apiBase == "" {
+		apiBase = "https://api.github.com"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/user/installations", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := d.http().Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var out struct {
+		TotalCount int `json:"total_count"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out) != nil {
+		return
+	}
+	if out.TotalCount > 0 {
+		fmt.Fprintf(d.Out, "  App installed on your GitHub (%d installation(s)); boxes can reach those repos.\n", out.TotalCount)
+		return
+	}
+	installURL := "https://github.com/apps/" + slug + "/installations/new"
+	fmt.Fprintf(d.Out, "\n  The app is not installed on any of your repositories yet, so boxes\n"+
+		"  cannot reach your code. Choose the repositories now:\n\n    %s\n\n"+
+		"  Press Enter when done (or to skip — scratch boxes work either way). ", installURL)
+	openBrowser := d.OpenBrowser
+	if openBrowser == nil {
+		openBrowser = osOpenBrowser
+	}
+	openBrowser(installURL)
+	if stdin != nil {
+		_, _ = bufio.NewReader(stdin).ReadString('\n')
 	}
 }
 

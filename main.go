@@ -37,7 +37,8 @@ usage:
   yas exec <id> -- cmd...   run one command, stream its output
   yas suspend|resume <id>   pause and unpause a box
   yas rm <id>               delete a box
-  yas login                 store your API key (and optional provider keys)
+  yas login                 sign in with GitHub (or paste a key); provider keys via -anthropic/-openai
+  yas keys                  list, create and revoke this account's API keys (service accounts)
   yas version               print the version
 
 anything else runs INSIDE a box:
@@ -67,6 +68,7 @@ var verbs = map[string]func([]string) error{
 	"resume":  cmdResume,
 	"exec":    cmdExec,
 	"login":   cmdLogin,
+	"keys":    cmdKeys,
 	"stdio":   cmdStdio,
 }
 
