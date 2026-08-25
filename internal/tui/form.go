@@ -6,6 +6,17 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+var (
+	cardStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(subtle).
+			Padding(1, 3)
+	labelStyle      = lipgloss.NewStyle().Foreground(subtle).Width(12)
+	labelFocusStyle = lipgloss.NewStyle().Foreground(accent).Bold(true).Width(12)
+	markerStyle     = lipgloss.NewStyle().Foreground(accent)
 )
 
 // RunCreateForm collects a new box's shape. Every field is optional: enter on
@@ -14,21 +25,27 @@ import (
 func RunCreateForm(suggestedName string) (CreateOpts, bool, error) {
 	fields := []struct{ label, placeholder string }{
 		{"name", suggestedName},
-		{"memory MiB", "server default"},
-		{"vCPUs", "server default"},
-		{"disk MiB", "server default"},
-		{"idle TTL sec", "server default"},
+		{"memory", "server default (MiB)"},
+		{"vcpus", "server default"},
+		{"disk", "server default (MiB)"},
+		{"idle ttl", "server default (sec)"},
 	}
 	inputs := make([]textinput.Model, len(fields))
 	for i, f := range fields {
 		ti := textinput.New()
 		ti.Prompt = ""
 		ti.Placeholder = f.placeholder
+		ti.PlaceholderStyle = faintStyle
 		ti.CharLimit = 64
+		ti.Cursor.Style = markerStyle
 		inputs[i] = ti
 	}
 	inputs[0].Focus()
-	m := formModel{labels: fieldLabels(fields), inputs: inputs, suggested: suggestedName}
+	labels := make([]string, len(fields))
+	for i, f := range fields {
+		labels[i] = f.label
+	}
+	m := formModel{labels: labels, inputs: inputs, suggested: suggestedName}
 	out, err := tea.NewProgram(m).Run()
 	if err != nil {
 		return CreateOpts{}, false, err
@@ -48,14 +65,6 @@ func RunCreateForm(suggestedName string) (CreateOpts, bool, error) {
 		DiskMiB:    atoiOrZero(fm.inputs[3].Value()),
 		IdleTtlSec: atoiOrZero(fm.inputs[4].Value()),
 	}, true, nil
-}
-
-func fieldLabels(fields []struct{ label, placeholder string }) []string {
-	out := make([]string, len(fields))
-	for i, f := range fields {
-		out[i] = f.label
-	}
-	return out
 }
 
 func atoiOrZero(s string) int {
@@ -110,42 +119,17 @@ func (m formModel) refocus() (tea.Model, tea.Cmd) {
 }
 
 func (m formModel) View() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("new box") + "\n\n")
+	var rows []string
+	rows = append(rows, brandStyle.Render("yas")+dimStyle.Render("  ·  new box"), "")
 	for i, in := range m.inputs {
-		label := m.labels[i]
+		marker := "  "
+		label := labelStyle.Render(m.labels[i])
 		if i == m.focus {
-			label = activeStyle.Render(label)
+			marker = markerStyle.Render("▸ ")
+			label = labelFocusStyle.Render(m.labels[i])
 		}
-		b.WriteString("  " + pad(label, 14) + in.View() + "\n")
+		rows = append(rows, marker+label+in.View())
 	}
-	b.WriteString("\n" + dimStyle.Render("enter create · tab next field · esc cancel"))
-	return b.String()
-}
-
-func pad(s string, n int) string {
-	// lipgloss styles carry escape codes, so measure the visible width.
-	visible := len(stripANSI(s))
-	if visible >= n {
-		return s + " "
-	}
-	return s + strings.Repeat(" ", n-visible)
-}
-
-func stripANSI(s string) string {
-	var out strings.Builder
-	inEsc := false
-	for _, r := range s {
-		switch {
-		case inEsc:
-			if r == 'm' {
-				inEsc = false
-			}
-		case r == '\x1b':
-			inEsc = true
-		default:
-			out.WriteRune(r)
-		}
-	}
-	return out.String()
+	rows = append(rows, "", faintStyle.Render("↵ create   tab next   esc cancel"))
+	return "\n" + cardStyle.Render(strings.Join(rows, "\n")) + "\n"
 }
