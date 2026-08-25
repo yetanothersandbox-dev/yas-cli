@@ -237,6 +237,9 @@ type SignupResult struct {
 	KeyID         string `json:"keyId"`
 	Key           string `json:"key"`
 	TenantCreated bool   `json:"tenantCreated"`
+	// Installations is how many app installations the account has; -1 means
+	// the gateway could not tell. Zero steers login's install prompt.
+	Installations int `json:"installations"`
 }
 
 // Signup exchanges a GitHub token pair for a tenant key, handing the pair

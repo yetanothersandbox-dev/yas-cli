@@ -10,35 +10,47 @@ import (
 	"time"
 )
 
-// The loopback round trip, driven as the browser would drive it: Run opens
-// the install page (captured), the "browser" comes back to the callback with
-// the code and the SAME state, and Run returns the code.
-func TestWebLoginRoundTrip(t *testing.T) {
-	opened := make(chan string, 1)
+func startWL(t *testing.T, ports []int) (*webLogin, chan string) {
+	t.Helper()
+	opened := make(chan string, 2)
 	wl := &webLogin{
-		Slug: "yetanothersandbox-app", Out: io.Discard,
+		ClientID: "Iv23.test", Slug: "yetanothersandbox-app", Out: io.Discard,
 		OpenBrowser: func(u string) { opened <- u },
 		Timeout:     5 * time.Second,
-		Ports:       []int{18976, 18977},
+		Ports:       ports,
 	}
+	if err := wl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(wl.Close)
+	return wl, opened
+}
+
+// Phase one is the AUTHORIZE url — the returning-user path — and the state
+// must gate the callback: a stray request with the wrong state cannot
+// complete anyone's login.
+func TestWebLoginAuthorizeRoundTrip(t *testing.T) {
+	wl, opened := startWL(t, []int{18976, 18977})
 	type res struct {
 		code string
 		err  error
 	}
 	done := make(chan res, 1)
 	go func() {
-		c, err := wl.Run(context.Background())
+		c, err := wl.Authorize(context.Background())
 		done <- res{c, err}
 	}()
 
 	u := <-opened
-	if !strings.Contains(u, "github.com/apps/yetanothersandbox-app/installations/new?state=") {
-		t.Fatalf("opened %q, want the install page with state", u)
+	if !strings.HasPrefix(u, "https://github.com/login/oauth/authorize?client_id=Iv23.test") {
+		t.Fatalf("phase one opened %q; the install page is NOT the login page", u)
+	}
+	if !strings.Contains(u, "redirect_uri=http%3A%2F%2F127.0.0.1%3A18976%2Fcallback") {
+		t.Fatalf("no loopback redirect_uri in %q", u)
 	}
 	parsed, _ := url.Parse(u)
 	state := parsed.Query().Get("state")
 
-	// A stray request with the WRONG state must not complete the login.
 	resp, err := http.Get("http://127.0.0.1:18976/callback?code=evil&state=wrong")
 	if err != nil {
 		t.Fatal(err)
@@ -59,31 +71,46 @@ func TestWebLoginRoundTrip(t *testing.T) {
 	}
 	got := <-done
 	if got.err != nil || got.code != "good-code" {
-		t.Fatalf("Run = %q, %v", got.code, got.err)
+		t.Fatalf("Authorize = %q, %v", got.code, got.err)
 	}
 }
 
-// GitHub reporting an error (user cancelled) surfaces as an error, not a
-// hang and not a bogus code.
-func TestWebLoginSurfacesADenial(t *testing.T) {
-	opened := make(chan string, 1)
-	wl := &webLogin{
-		Slug: "x", Out: io.Discard,
-		OpenBrowser: func(u string) { opened <- u },
-		Timeout:     5 * time.Second,
-		Ports:       []int{18978},
+// Phase two reuses the SAME listener and state, and swallows the install
+// redirect's code — identity was settled in phase one.
+func TestWebLoginInstallPromptSecondPhase(t *testing.T) {
+	wl, opened := startWL(t, []int{18978})
+	go func() {
+		u := <-opened // authorize
+		p, _ := url.Parse(u)
+		_, _ = http.Get("http://127.0.0.1:18978/callback?code=c1&state=" + p.Query().Get("state"))
+		u2 := <-opened // install page
+		if !strings.Contains(u2, "github.com/apps/yetanothersandbox-app/installations/new") {
+			panic("phase two opened " + u2)
+		}
+		p2, _ := url.Parse(u2)
+		_, _ = http.Get("http://127.0.0.1:18978/callback?code=c2&installation_id=1&setup_action=install&state=" + p2.Query().Get("state"))
+	}()
+	if code, err := wl.Authorize(context.Background()); err != nil || code != "c1" {
+		t.Fatalf("authorize: %q %v", code, err)
 	}
+	doneBy := time.Now().Add(5 * time.Second)
+	wl.PromptInstall(context.Background())
+	if time.Now().After(doneBy) {
+		t.Fatal("PromptInstall did not return promptly after the install redirect")
+	}
+}
+
+// A denial in phase one surfaces as an error, not a hang.
+func TestWebLoginSurfacesADenial(t *testing.T) {
+	wl, opened := startWL(t, []int{18979})
 	errs := make(chan error, 1)
 	go func() {
-		_, err := wl.Run(context.Background())
+		_, err := wl.Authorize(context.Background())
 		errs <- err
 	}()
 	u := <-opened
-	state := ""
-	if p, err := url.Parse(u); err == nil {
-		state = p.Query().Get("state")
-	}
-	resp, err := http.Get("http://127.0.0.1:18978/callback?error=access_denied&state=" + state)
+	p, _ := url.Parse(u)
+	resp, err := http.Get("http://127.0.0.1:18979/callback?error=access_denied&state=" + p.Query().Get("state"))
 	if err != nil {
 		t.Fatal(err)
 	}

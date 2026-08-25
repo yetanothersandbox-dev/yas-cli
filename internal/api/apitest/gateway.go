@@ -50,6 +50,8 @@ type Gateway struct {
 	// SignupKey, when set, makes POST /v1/signup answer 201 with this key for
 	// the token "gho_good" and 401 for anything else.
 	SignupKey string
+	// SignupInstallations is the installations count signup reports.
+	SignupInstallations int
 	// SignupSaw records the last signup body, so a test can assert the
 	// refresh half of the pair actually travelled.
 	SignupSaw map[string]any
@@ -149,7 +151,7 @@ func (g *Gateway) signup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"tenantId": "gh-583231", "login": "octocat", "keyId": "ak_test",
-		"key": g.SignupKey, "tenantCreated": true,
+		"key": g.SignupKey, "tenantCreated": true, "installations": g.SignupInstallations,
 	})
 }
 

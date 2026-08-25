@@ -133,11 +133,15 @@ func loginGitHub(cfg *config.Config, clientID string, forceDevice bool) error {
 	var res api.SignupResult
 	webErr := errors.New("no app slug in this build")
 	if !forceDevice && slug != "" {
-		var code string
-		wl := &webLogin{Slug: slug, Out: os.Stderr}
-		code, webErr = wl.Run(ctx)
-		if webErr == nil {
-			res, webErr = cl.SignupCode(ctx, code)
+		wl := &webLogin{ClientID: clientID, Slug: slug, Out: os.Stderr}
+		if webErr = wl.Start(); webErr == nil {
+			var code string
+			if code, webErr = wl.Authorize(ctx); webErr == nil {
+				if res, webErr = cl.SignupCode(ctx, code); webErr == nil && res.Installations == 0 {
+					wl.PromptInstall(ctx)
+				}
+			}
+			wl.Close()
 		}
 	}
 	if forceDevice || webErr != nil {
