@@ -183,10 +183,33 @@ func (c *Client) List(ctx context.Context) ([]SandboxSummary, error) {
 	return out.Sandboxes, nil
 }
 
+// Get reads one sandbox's full record.
+//
+// The response is an ENVELOPE — `{"sandbox": {...}, "terminal": bool,
+// "retired": bool}` — and not the record at the top level. Decoding it flat
+// silently produced a zero-valued Sandbox on every call: `yas ls` printed empty
+// statuses, the picker showed every box as blank, and sshutil's
+// wait-until-ready loop compared against a status that was always "". Nothing
+// errored, because a JSON object with no matching fields decodes cleanly into a
+// struct and leaves it untouched.
+//
+// `retired` is lifted onto the record rather than returned separately: every
+// caller that cares wants to know "is this a live box or a remembered one?",
+// and a second return value would be dropped at three of the four call sites.
 func (c *Client) Get(ctx context.Context, id string) (Sandbox, error) {
-	var s Sandbox
-	err := c.do(ctx, http.MethodGet, "/v1/sandboxes/"+id, nil, &s)
-	return s, err
+	var env struct {
+		Sandbox  Sandbox `json:"sandbox"`
+		Terminal bool    `json:"terminal"`
+		Retired  bool    `json:"retired"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/sandboxes/"+id, nil, &env); err != nil {
+		return Sandbox{}, err
+	}
+	out := env.Sandbox
+	if env.Retired {
+		out.Retired = true
+	}
+	return out, nil
 }
 
 func (c *Client) Delete(ctx context.Context, id string) error {

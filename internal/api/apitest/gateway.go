@@ -266,7 +266,24 @@ func (g *Gateway) byID(w http.ResponseWriter, r *http.Request, id, rest string) 
 	}
 	switch {
 	case rest == "" && r.Method == http.MethodGet:
-		_ = json.NewEncoder(w).Encode(b)
+		// The ENVELOPE, matching what fleetd actually sends:
+		// `{"sandbox": {...}, "terminal": bool}`, not the record at the top
+		// level.
+		//
+		// This fake used to encode the record flat, and that is how a real bug
+		// survived: api.Client.Get decoded flat too, so the two agreed with each
+		// other and disagreed with the server. Against production every Get
+		// returned a ZERO Sandbox — `yas ls` printed empty statuses, the picker
+		// showed every box blank, and sshutil compared readiness against a
+		// status that was always "" — and nothing errored, because a JSON object
+		// with no matching fields decodes cleanly and leaves the struct alone.
+		//
+		// A fake that is wrong in the same direction as its client is worse than
+		// no fake: it converts a bug into a passing test.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sandbox":  b,
+			"terminal": b.Status == "stopped" || b.Status == "failed" || b.Status == "cancelled",
+		})
 	case rest == "" && r.Method == http.MethodDelete:
 		g.mu.Lock()
 		delete(g.boxes, id)

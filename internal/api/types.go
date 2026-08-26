@@ -31,6 +31,12 @@ type CreateRequest struct {
 	// Policy is the box's privacy posture. Absent = sealed (proxy egress,
 	// credentials attached) — exactly what every create was before policies.
 	Policy *Policy `json:"policy,omitempty"`
+	// Profile names a saved profile the GATEWAY expands, at the edge, into the
+	// fields above before the body reaches a host. It never travels further: a
+	// host has no concept of a profile, and a field it ignored would leave a
+	// caller who mistyped a name with a box that has none of the posture they
+	// asked for. An unknown name is refused with 404 no_such_profile.
+	Profile string `json:"profile,omitempty"`
 }
 
 // Policy mirrors the server's SandboxPolicy.

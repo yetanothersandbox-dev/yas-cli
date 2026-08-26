@@ -32,12 +32,25 @@ func cmdNew(args []string) error {
 	allow := fs.String("allow", "", "comma-separated DNS suffixes a filtered box may reach (e.g. github.com,pypi.org)")
 	connect := fs.String("connect", "", "comma-separated CONNECT tunnel targets for a sealed box (host or host:port, e.g. ssh.github.com:22)")
 	noCreds := fs.Bool("no-creds", false, "attach no credentials to this box, whatever is stored")
+	profile := fs.String("profile", "", "create from a saved profile: its posture, size and repo, unless a flag here overrides them")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	boxName, err := reconcileName(*name, fs.Args())
+	if err != nil {
+		return err
+	}
+
 	pol, err := buildPolicy(*preset, *allow, *connect, *noCreds)
 	if err != nil {
 		return err
+	}
+	// A profile carries a posture of its own, so asking for both is a create
+	// whose privacy nobody chose. The server would take the caller's explicit
+	// policy and drop the profile's silently; refusing here says so instead.
+	if *profile != "" && pol != nil {
+		return fmt.Errorf("-profile and -preset/-allow/-connect/-no-creds set the same thing; use one")
 	}
 
 	cfg, cl, err := loadClient()
@@ -45,8 +58,9 @@ func cmdNew(args []string) error {
 		return err
 	}
 	id, err := createBox(context.Background(), cl, cfg, createOpts{
-		Name: *name, MemMiB: *mem, Vcpus: *cpus, DiskMiB: *disk,
+		Name: boxName, MemMiB: *mem, Vcpus: *cpus, DiskMiB: *disk,
 		IdleTtlSec: *ttl, MaxLifetimeSec: *lifetime, Policy: pol,
+		Profile: *profile,
 	})
 	if err != nil {
 		return err
@@ -58,6 +72,31 @@ func cmdNew(args []string) error {
 	return sshutil.Connect(context.Background(), cl, cfg, id, nil)
 }
 
+// reconcileName resolves the box name from the -name flag and the positional
+// argument.
+//
+// The POSITIONAL form is what everybody types, and what the README and the
+// website have always shown. Until it was wired up the argument was IGNORED:
+// the box got a generated name, so the user got a working box under a name they
+// did not choose and nothing said so. A silently-different result is worse than
+// an error, which is why disagreement is refused rather than resolved — a
+// caller who typed two different names meant one of them, and we cannot tell
+// which.
+func reconcileName(flagName string, rest []string) (string, error) {
+	switch {
+	case len(rest) == 0:
+		return flagName, nil
+	case len(rest) > 1:
+		return "", fmt.Errorf("one name at most, got %d arguments: %s", len(rest), strings.Join(rest, " "))
+	case flagName == "":
+		return rest[0], nil
+	case rest[0] == flagName:
+		return flagName, nil
+	default:
+		return "", fmt.Errorf("two different names: %q as an argument and %q as -name; pick one", rest[0], flagName)
+	}
+}
+
 type createOpts struct {
 	Name           string
 	MemMiB         int
@@ -66,6 +105,10 @@ type createOpts struct {
 	IdleTtlSec     int
 	MaxLifetimeSec int
 	Policy         *api.Policy
+	// Profile names a saved profile the gateway expands at the edge. Anything
+	// set explicitly here still wins over it — that is the server's rule, not
+	// this client's, and it is why the two are not merged locally.
+	Profile string
 }
 
 // buildPolicy turns the preset and flags into the wire policy. Nil means
@@ -148,6 +191,7 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 	req := api.CreateRequest{
 		ID:             id,
 		Policy:         o.Policy,
+		Profile:        o.Profile,
 		MemMiB:         firstNonZero(o.MemMiB, cfg.Defaults.MemMiB),
 		VcpuCount:      firstNonZero(o.Vcpus, cfg.Defaults.VcpuCount),
 		DiskMiB:        firstNonZero(o.DiskMiB, cfg.Defaults.DiskMiB),

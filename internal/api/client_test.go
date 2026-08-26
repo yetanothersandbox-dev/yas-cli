@@ -167,3 +167,33 @@ func TestErrorKindSurfacesTheWireField(t *testing.T) {
 		t.Fatalf("kind = %q", api.ErrorKind(err))
 	}
 }
+
+// Get must read the ENVELOPE fleetd actually sends.
+//
+// This is a regression test for a bug that survived because the fake agreed
+// with the client and both disagreed with the server: fleetd answers
+// `{"sandbox": {...}, "terminal": bool}` and the client decoded the record at
+// the top level, so every Get returned a ZERO Sandbox. Nothing errored — a JSON
+// object with no matching fields decodes cleanly and leaves the struct alone —
+// so `yas ls` printed empty statuses and the readiness wait compared against a
+// status that was always "".
+//
+// The assertion that matters is not "no error" but "the fields arrived".
+func TestGetReadsTheSandboxEnvelope(t *testing.T) {
+	cl, gw := newClient(t)
+	gw.Add(apitest.Box{ID: "dev", Status: "idle", MemMiB: 4096})
+
+	sb, err := cl.Get(context.Background(), "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.ID != "dev" {
+		t.Fatalf("id = %q, want dev — the record did not survive the envelope", sb.ID)
+	}
+	if sb.Status != "idle" {
+		t.Fatalf("status = %q, want idle", sb.Status)
+	}
+	if sb.MemMiB != 4096 {
+		t.Fatalf("memMib = %d, want 4096", sb.MemMiB)
+	}
+}
