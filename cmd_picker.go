@@ -61,8 +61,14 @@ func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
 				note = perr.Error()
 				continue
 			}
+			milliVcpu, perr := parseVcpus(opts.Vcpus)
+			if perr != nil {
+				suggestion = opts.Name
+				note = perr.Error()
+				continue
+			}
 			id, err := createBox(context.Background(), cl, cfg, createOpts{
-				Name: opts.Name, MemMiB: opts.MemMiB, Vcpus: opts.Vcpus,
+				Name: opts.Name, MemMiB: opts.MemMiB, MilliVcpu: milliVcpu,
 				DiskMiB: opts.DiskMiB, IdleTtlSec: opts.IdleTtlSec, Policy: pol,
 			})
 			if err == nil {

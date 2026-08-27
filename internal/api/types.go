@@ -15,12 +15,15 @@ import (
 // CLI never sends `task` — a box you ssh into has no work order.
 type CreateRequest struct {
 	// ID is required and caller-chosen; the create is idempotent on it.
-	ID             string `json:"id"`
-	MemMiB         int    `json:"memMib,omitempty"`
-	VcpuCount      int    `json:"vcpuCount,omitempty"`
-	DiskMiB        int    `json:"diskMib,omitempty"`
-	MaxLifetimeSec int    `json:"maxLifetimeSec,omitempty"`
-	IdleTtlSec     int    `json:"idleTtlSec,omitempty"`
+	ID     string `json:"id"`
+	MemMiB int    `json:"memMib,omitempty"`
+	// MilliVcpu is thousandths of one vCPU (1000 = one vCPU) — how the API
+	// sells CPU since fractional plans. The old `vcpuCount` field (whole
+	// vCPUs) is still accepted server-side; this client always speaks milli.
+	MilliVcpu      int `json:"milliVcpu,omitempty"`
+	DiskMiB        int `json:"diskMib,omitempty"`
+	MaxLifetimeSec int `json:"maxLifetimeSec,omitempty"`
+	IdleTtlSec     int `json:"idleTtlSec,omitempty"`
 	// SSHKeys are public halves only; the create installs them before the 202,
 	// so create-then-connect does not race.
 	SSHKeys []string `json:"sshKeys,omitempty"`
@@ -81,9 +84,13 @@ type Sandbox struct {
 	CreatedAt  time.Time `json:"createdAt"`
 	MemMiB     int       `json:"memMib"`
 	MemUsedMiB int       `json:"memUsedMib"`
-	VcpuCount  int       `json:"vcpuCount"`
-	CostUSD    float64   `json:"costUsd"`
-	Retired    bool      `json:"retired"`
+	// VcpuCount is the guest's whole-vCPU topology; MilliVcpu is the CPU-time
+	// allowance (1000 = one vCPU). MilliVcpu is 0 on records from hosts that
+	// predate the milli unit — read that as VcpuCount whole vCPUs.
+	VcpuCount int     `json:"vcpuCount"`
+	MilliVcpu int     `json:"milliVcpu"`
+	CostUSD   float64 `json:"costUsd"`
+	Retired   bool    `json:"retired"`
 }
 
 // SSHAccess is the response of POST /v1/sandboxes/{id}/ssh.

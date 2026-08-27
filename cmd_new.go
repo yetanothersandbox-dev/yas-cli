@@ -23,7 +23,7 @@ func cmdNew(args []string) error {
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
 	name := fs.String("name", "", "sandbox id (default: generated)")
 	mem := fs.Int("mem", 0, "memory MiB")
-	cpus := fs.Int("cpus", 0, "vCPUs")
+	cpus := fs.String("cpus", "", "vCPUs; fractions allowed, e.g. 0.5 or 2")
 	disk := fs.Int("disk", 0, "disk MiB")
 	ttl := fs.Int("ttl", 0, "idle TTL seconds before the box is reaped")
 	lifetime := fs.Int("lifetime", 0, "max lifetime seconds")
@@ -38,6 +38,11 @@ func cmdNew(args []string) error {
 	}
 
 	boxName, err := reconcileName(*name, fs.Args())
+	if err != nil {
+		return err
+	}
+
+	milliVcpu, err := parseVcpus(*cpus)
 	if err != nil {
 		return err
 	}
@@ -58,7 +63,7 @@ func cmdNew(args []string) error {
 		return err
 	}
 	id, err := createBox(context.Background(), cl, cfg, createOpts{
-		Name: boxName, MemMiB: *mem, Vcpus: *cpus, DiskMiB: *disk,
+		Name: boxName, MemMiB: *mem, MilliVcpu: milliVcpu, DiskMiB: *disk,
 		IdleTtlSec: *ttl, MaxLifetimeSec: *lifetime, Policy: pol,
 		Profile: *profile,
 	})
@@ -98,9 +103,11 @@ func reconcileName(flagName string, rest []string) (string, error) {
 }
 
 type createOpts struct {
-	Name           string
-	MemMiB         int
-	Vcpus          int
+	Name   string
+	MemMiB int
+	// MilliVcpu is thousandths of one vCPU (1000 = one vCPU) — the unit the
+	// API sells in. parseVcpus turns what a human types ("0.5", "2") into it.
+	MilliVcpu      int
 	DiskMiB        int
 	IdleTtlSec     int
 	MaxLifetimeSec int
@@ -109,6 +116,44 @@ type createOpts struct {
 	// set explicitly here still wins over it — that is the server's rule, not
 	// this client's, and it is why the two are not merged locally.
 	Profile string
+}
+
+// parseVcpus turns the human spelling of a vCPU count — "2", "0.5", "1.25" —
+// into milli-vCPU. Decimal string arithmetic, not ParseFloat: the number is an
+// entitlement, and 3 decimal places is exactly what the milli unit can carry,
+// so a fourth is refused rather than rounded into a figure the server never
+// agreed to. Empty means "the server default", like every other size flag.
+func parseVcpus(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole == "" {
+		whole = "0"
+	}
+	w, err := strconv.Atoi(whole)
+	if err != nil || w < 0 {
+		return 0, fmt.Errorf("-cpus %q is not a vCPU count; use e.g. 2 or 0.5", s)
+	}
+	milli := w * 1000
+	if frac != "" {
+		if len(frac) > 3 {
+			return 0, fmt.Errorf("-cpus %q is finer than the API's milli-vCPU unit; use at most 3 decimals", s)
+		}
+		f, err := strconv.Atoi(frac)
+		if err != nil || f < 0 {
+			return 0, fmt.Errorf("-cpus %q is not a vCPU count; use e.g. 2 or 0.5", s)
+		}
+		for i := len(frac); i < 3; i++ {
+			f *= 10
+		}
+		milli += f
+	}
+	if milli == 0 {
+		return 0, fmt.Errorf("-cpus 0 would be a box with no CPU at all; omit the flag for the server default")
+	}
+	return milli, nil
 }
 
 // buildPolicy turns the preset and flags into the wire policy. Nil means
@@ -193,7 +238,7 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		Policy:         o.Policy,
 		Profile:        o.Profile,
 		MemMiB:         firstNonZero(o.MemMiB, cfg.Defaults.MemMiB),
-		VcpuCount:      firstNonZero(o.Vcpus, cfg.Defaults.VcpuCount),
+		MilliVcpu:      firstNonZero(o.MilliVcpu, cfg.Defaults.MilliVcpu, cfg.Defaults.VcpuCount*1000),
 		DiskMiB:        firstNonZero(o.DiskMiB, cfg.Defaults.DiskMiB),
 		IdleTtlSec:     firstNonZero(o.IdleTtlSec, cfg.Defaults.IdleTtlSec),
 		MaxLifetimeSec: firstNonZero(o.MaxLifetimeSec, cfg.Defaults.MaxLifetimeSec),

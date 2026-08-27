@@ -28,7 +28,7 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 	fields := []struct{ label, placeholder string }{
 		{"name", suggestedName},
 		{"memory", "server default (MiB)"},
-		{"vcpus", "server default"},
+		{"vcpus", "server default (0.5 ok)"},
 		{"disk", "server default (MiB)"},
 		{"idle ttl", "server default (sec)"},
 		{"egress", "sealed · filtered · open"},
@@ -68,7 +68,7 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 	return CreateOpts{
 		Name:       name,
 		MemMiB:     atoiOrZero(fm.inputs[1].Value()),
-		Vcpus:      atoiOrZero(fm.inputs[2].Value()),
+		Vcpus:      strings.TrimSpace(fm.inputs[2].Value()),
 		DiskMiB:    atoiOrZero(fm.inputs[3].Value()),
 		IdleTtlSec: atoiOrZero(fm.inputs[4].Value()),
 		Egress:     strings.TrimSpace(fm.inputs[5].Value()),

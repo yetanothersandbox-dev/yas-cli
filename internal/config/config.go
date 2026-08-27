@@ -16,8 +16,12 @@ import (
 )
 
 type Defaults struct {
-	MemMiB         int `json:"memMib,omitempty"`
+	MemMiB int `json:"memMib,omitempty"`
+	// VcpuCount is the old default, in WHOLE vCPUs; MilliVcpu is thousandths
+	// of one. Both are read so an existing config file keeps meaning what it
+	// meant, and the milli one wins when both are set.
 	VcpuCount      int `json:"vcpuCount,omitempty"`
+	MilliVcpu      int `json:"milliVcpu,omitempty"`
 	DiskMiB        int `json:"diskMib,omitempty"`
 	IdleTtlSec     int `json:"idleTtlSec,omitempty"`
 	MaxLifetimeSec int `json:"maxLifetimeSec,omitempty"`

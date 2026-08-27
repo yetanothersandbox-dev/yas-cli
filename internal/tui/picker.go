@@ -31,9 +31,11 @@ type Result struct {
 
 // CreateOpts is the form's output; zero fields mean "the config default".
 type CreateOpts struct {
-	Name       string
-	MemMiB     int
-	Vcpus      int
+	Name   string
+	MemMiB int
+	// Vcpus is what the human typed, verbatim ("2", "0.5", ""); the caller
+	// parses it into milli-vCPU so the form does not own unit arithmetic.
+	Vcpus      string
 	DiskMiB    int
 	IdleTtlSec int
 	// Egress is the privacy preset ("" = sealed); Allow is the filtered
