@@ -427,3 +427,41 @@ func (c *Client) CreateKey(ctx context.Context, name string) (id, secret string,
 func (c *Client) RevokeKey(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/keys/"+id, nil, nil)
 }
+
+// BoxDefaults is the size a box of this account's gets when a create names none.
+//
+// Both the override and what is actually in force, because they are different
+// questions and a caller that only knew one would have to guess: MemMiB is zero
+// for almost everybody, and Effective is the number a box will really get.
+type BoxDefaults struct {
+	MemMiB             int `json:"memMib"`
+	MilliVcpu          int `json:"milliVcpu"`
+	EffectiveMemMiB    int `json:"effectiveMemMib"`
+	EffectiveMilliVcpu int `json:"effectiveMilliVcpu"`
+	MaxMemMiB          int `json:"maxMemMib"`
+	MaxMilliVcpu       int `json:"maxMilliVcpu"`
+}
+
+// BoxDefaults reads the current setting.
+func (c *Client) BoxDefaults(ctx context.Context) (BoxDefaults, error) {
+	var out BoxDefaults
+	if err := c.do(ctx, http.MethodGet, "/v1/user/box-defaults", nil, &out); err != nil {
+		return BoxDefaults{}, err
+	}
+	return out, nil
+}
+
+// SetBoxDefaults writes it. Zero on a field CLEARS it, returning that dimension
+// to the plan's own default — there is no separate delete verb, so an emptied
+// value has to mean "stop overriding".
+func (c *Client) SetBoxDefaults(ctx context.Context, memMiB, milliVcpu int) (BoxDefaults, error) {
+	body := struct {
+		MemMiB    int `json:"memMib"`
+		MilliVcpu int `json:"milliVcpu"`
+	}{memMiB, milliVcpu}
+	var out BoxDefaults
+	if err := c.do(ctx, http.MethodPut, "/v1/user/box-defaults", body, &out); err != nil {
+		return BoxDefaults{}, err
+	}
+	return out, nil
+}

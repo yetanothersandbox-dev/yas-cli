@@ -81,6 +81,7 @@ func usage(w *os.File) {
 
 	fmt.Fprintln(w, "\n"+head("account"))
 	row("yas keys", "API keys for machines that are not you")
+	row("yas defaults", "the size a box gets when you do not say")
 	row("yas login -anthropic", "store a provider key; a box never sees it")
 	row("yas version", "print the version")
 
@@ -99,19 +100,20 @@ func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code
 // in a sandbox, so ADDING a verb is a compatibility decision: it shadows any
 // program of the same name.
 var verbs = map[string]func([]string) error{
-	"new":     cmdNew,
-	"list":    cmdList,
-	"ls":      cmdList,
-	"ssh":     cmdSSH,
-	"connect": cmdSSH,
-	"rm":      cmdRemove,
-	"delete":  cmdRemove,
-	"suspend": cmdSuspend,
-	"resume":  cmdResume,
-	"exec":    cmdExec,
-	"login":   cmdLogin,
-	"keys":    cmdKeys,
-	"stdio":   cmdStdio,
+	"new":      cmdNew,
+	"list":     cmdList,
+	"ls":       cmdList,
+	"ssh":      cmdSSH,
+	"connect":  cmdSSH,
+	"rm":       cmdRemove,
+	"delete":   cmdRemove,
+	"suspend":  cmdSuspend,
+	"resume":   cmdResume,
+	"exec":     cmdExec,
+	"login":    cmdLogin,
+	"keys":     cmdKeys,
+	"defaults": cmdDefaults,
+	"stdio":    cmdStdio,
 }
 
 func main() {
