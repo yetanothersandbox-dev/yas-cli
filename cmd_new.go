@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"flag"
@@ -257,17 +258,13 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 	sp := ui.Start("creating " + id + "…")
 	// A create can queue behind capacity, and the client retries a 503 twice
 	// before giving up. Silence through that reads as a hang, so the label
-	// changes once the wait stops being normal.
-	relabelled := make(chan struct{})
-	go func() {
-		select {
-		case <-time.After(8 * time.Second):
-			sp.Relabel("creating " + id + "… the fleet is finding room. Hold.")
-		case <-relabelled:
-		}
-	}()
-	cerr := cl.Create(ctx, req)
-	close(relabelled)
+	// changes once the wait stops being normal. See createWait.
+	w := &createWait{sp: sp, id: id}
+	c := *cl
+	c.OnRetry = w.capacity
+	stop := w.start()
+	cerr := c.Create(ctx, req)
+	stop()
 	if err := cerr; err != nil {
 		sp.Stop("")
 		switch {
@@ -295,6 +292,106 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		_ = config.Save(cfg2)
 	}
 	return id, nil
+}
+
+// What the spinner is allowed to say while a create is outstanding.
+//
+// # It stopped naming a cause it could not know
+//
+// The old line relabelled once, at eight seconds, to "the fleet is finding
+// room. Hold." — a specific CAUSE, asserted by a client that has no way of
+// knowing it. A create is slow either because it is queueing behind fleet
+// capacity or because this particular one is taking a while, and from out here
+// those are the same silence. Guessing is the mistake ui.Refusal exists to
+// avoid: inventing detail this CLI does not have.
+//
+// So there are two sources now, and they are ranked. The clock knows only how
+// long it has been, and says only that. Client.OnRetry fires at the one moment
+// the cause is genuinely known — the gateway answered 503 no_capacity — and
+// what it says outranks the clock for the rest of the wait, because a named
+// cause beats a stopwatch.
+//
+// # It also stopped freezing
+//
+// The single relabel meant eight seconds and four minutes read identically.
+// The rungs below escalate, and the last two say what to do — `yas list` is
+// the honest answer because a create is synchronous and a cancelled one may or
+// may not have landed. Note what they do NOT say: that ctrl-c is safe, or that
+// the box keeps building without you. The gateway builds on the REQUEST's
+// context (see createSandbox), so hanging up cancels the create — telling
+// somebody otherwise would be a comfortable lie.
+var createRungs = []struct {
+	after time.Duration
+	say   string
+}{
+	{8 * time.Second, "longer than usual"},
+	{30 * time.Second, "still going — `yas list` will say whether it landed"},
+	{90 * time.Second, "this is unusual, and it is on us — `yas list` will say whether it landed"},
+}
+
+type createWait struct {
+	sp *ui.Spinner
+	id string
+
+	mu    sync.Mutex
+	cause string // set by the gateway; outranks the clock
+}
+
+// capacity is Client.OnRetry: the gateway said it has no room right now.
+func (w *createWait) capacity(attempt int, wait time.Duration, _ error) {
+	w.mu.Lock()
+	w.cause = fmt.Sprintf("the fleet is full — trying again in %ds, attempt %d of 3",
+		int(wait.Seconds()), attempt)
+	w.mu.Unlock()
+	w.say()
+}
+
+func (w *createWait) say() {
+	w.mu.Lock()
+	cause := w.cause
+	w.mu.Unlock()
+	if cause == "" {
+		return
+	}
+	w.sp.Relabel("creating " + w.id + "… " + cause)
+}
+
+// start runs the clock, and returns the function that stops it.
+//
+// The clock is a TERMINAL affordance and runs only on one. In a pipe the
+// spinner prints each label as its own line, so a ladder would put three extra
+// lines in a CI log to say nothing that the timestamps beside them do not.
+// OnRetry is not gated the same way: "the fleet was full" is worth a line in a
+// log, because it is the difference between a slow build and a busy fleet.
+func (w *createWait) start() func() {
+	done := make(chan struct{})
+	if !ui.StderrTTY() {
+		return func() { close(done) }
+	}
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		began, rung := time.Now(), 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				w.mu.Lock()
+				named := w.cause != ""
+				w.mu.Unlock()
+				if named {
+					continue // a known cause outranks the clock
+				}
+				el := time.Since(began)
+				for rung < len(createRungs) && el >= createRungs[rung].after {
+					w.sp.Relabel("creating " + w.id + "… " + createRungs[rung].say)
+					rung++
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func unlessSuppressed(suppressed bool, v string) string {

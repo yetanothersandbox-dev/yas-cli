@@ -24,6 +24,17 @@ type Client struct {
 	HTTP    *http.Client
 	// Sleep is the retry pause seam; tests replace it. Nil means time.Sleep.
 	Sleep func(time.Duration)
+	// OnRetry, when set, is called just before Create waits out a 503
+	// no_capacity, with the attempt about to be made (1-based), how long the
+	// wait is, and the refusal that caused it.
+	//
+	// It exists because the caller cannot otherwise tell WHY a create is slow.
+	// From outside this method, "queueing behind fleet capacity" and "this one
+	// is just taking a while" look identical, and the CLI used to guess — it
+	// told everyone waiting more than eight seconds that "the fleet is finding
+	// room", which is a cause it had no way of knowing. This is the one moment
+	// the cause IS known, so it is reported instead of inferred.
+	OnRetry func(attempt int, wait time.Duration, err error)
 }
 
 // apiError is the {error, message} body every non-2xx carries, plus what the
@@ -166,6 +177,9 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) error {
 		wait := 5 * time.Second
 		if errors.As(err, &ae) && ae.RetryAfter > 0 {
 			wait = ae.RetryAfter
+		}
+		if c.OnRetry != nil {
+			c.OnRetry(attempt+2, wait, err)
 		}
 		c.sleep(wait)
 	}

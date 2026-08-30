@@ -52,6 +52,71 @@ func TestCreateRetriesNoCapacityAndHonoursRetryAfter(t *testing.T) {
 	}
 }
 
+// OnRetry fires once per wait, before it, with the attempt it is about to
+// make and the wait it honoured.
+//
+// It is the only way a caller learns WHY a create is slow. Without it the CLI
+// guessed from a stopwatch and told everybody past eight seconds that the
+// fleet was finding room — true here, and a fabrication on every create that
+// was simply taking a while.
+func TestCreateReportsEachCapacityRetry(t *testing.T) {
+	cl, gw := newClient(t)
+	type call struct {
+		attempt int
+		wait    time.Duration
+		kind    string
+	}
+	var got []call
+	cl.OnRetry = func(attempt int, wait time.Duration, err error) {
+		got = append(got, call{attempt, wait, api.ErrorKind(err)})
+	}
+	gw.CreateRefusals = []apitest.Refusal{
+		{Status: 503, Kind: "no_capacity", RetryAfter: "7"},
+		{Status: 503, Kind: "no_capacity"},
+	}
+	if err := cl.Create(context.Background(), api.CreateRequest{ID: "b-new"}); err != nil {
+		t.Fatalf("two 503s then room should succeed: %v", err)
+	}
+	want := []call{{2, 7 * time.Second, "no_capacity"}, {3, 5 * time.Second, "no_capacity"}}
+	if len(got) != len(want) {
+		t.Fatalf("OnRetry fired %d times (%v), want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("retry %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A create that never sees a 503 never reports one. The hook is a report of
+// something that happened, not a heartbeat — a caller that showed "the fleet
+// is full" on a create which was only ever slow would be back to guessing.
+func TestCreateReportsNoRetryWhenItSucceeds(t *testing.T) {
+	cl, _ := newClient(t)
+	fired := 0
+	cl.OnRetry = func(int, time.Duration, error) { fired++ }
+	if err := cl.Create(context.Background(), api.CreateRequest{ID: "b-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if fired != 0 {
+		t.Errorf("OnRetry fired %d times on a clean create, want 0", fired)
+	}
+}
+
+// A quota refusal is never retried, so it never reports a retry either.
+func TestCreateReportsNoRetryOnQuota(t *testing.T) {
+	cl, gw := newClient(t)
+	fired := 0
+	cl.OnRetry = func(int, time.Duration, error) { fired++ }
+	gw.CreateRefusals = []apitest.Refusal{{Status: 429, Kind: "quota_exceeded"}}
+	if err := cl.Create(context.Background(), api.CreateRequest{ID: "b"}); !api.IsQuota(err) {
+		t.Fatalf("err = %v, want a quota refusal", err)
+	}
+	if fired != 0 {
+		t.Errorf("OnRetry fired %d times on a quota refusal, want 0", fired)
+	}
+}
+
 func TestCreateGivesUpAfterThreeNoCapacityAnswers(t *testing.T) {
 	cl, gw := newClient(t)
 	gw.CreateRefusals = []apitest.Refusal{
