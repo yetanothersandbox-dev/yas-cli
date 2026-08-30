@@ -16,10 +16,12 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/Gilbert09/yas/clients/yas/internal/ui"
 )
 
 // Result is what a picker run decided.
@@ -46,51 +48,30 @@ type CreateOpts struct {
 
 const newBoxID = "\x00new"
 
-// ------------------------------------------------------------------- theme
-
-var (
-	accent  = lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#9D99FF"}
-	subtle  = lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
-	faintFg = lipgloss.AdaptiveColor{Light: "#B2B2B2", Dark: "#4A4A4A"}
-	danger  = lipgloss.AdaptiveColor{Light: "#D0342C", Dark: "#FF6B61"}
-
-	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	dimStyle   = lipgloss.NewStyle().Foreground(subtle)
-	faintStyle = lipgloss.NewStyle().Foreground(faintFg)
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	warnStyle  = lipgloss.NewStyle().Foreground(danger)
-
-	selBar    = lipgloss.NewStyle().Foreground(accent).SetString("▌ ")
-	selName   = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	plainName = lipgloss.NewStyle()
-
-	statusStyles = map[string]lipgloss.Style{
-		"idle":      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1A8917", Dark: "#3DDC5B"}),
-		"busy":      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B7791F", Dark: "#F5C043"}),
-		"starting":  lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0B7285", Dark: "#4DD0E1"}),
-		"suspended": lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#9D99FF"}),
-		"failed":    lipgloss.NewStyle().Foreground(danger),
-		"stopped":   faintStyle,
-	}
+// The layout, and the two things it gives up first.
+//
+// A picker has to work in the terminal it is given, and the terminal it is
+// given is sometimes a 60×15 pane in a split. So the screen is built in three
+// tiers and it sheds from the bottom of that list, not from the top: the box
+// list is the reason the program exists and it is the last thing to lose a
+// line.
+//
+//  1. narrow: the detail pane goes. It repeats what the row already says.
+//  2. short: the pool bar goes, then the wordmark collapses to one line.
+//  3. always: the list, the footer, and the ability to see which row is on.
+const (
+	// detailMin is the width below which a detail pane would be a column of
+	// wrapped fragments rather than a pane.
+	detailMin = 96
+	detailW   = 32
+	// detailMinH is the shortest list the pane can stand beside. Below it the
+	// pane is taller than its own column and the footer falls off the frame.
+	detailMinH = 12
+	// poolMin and markMin are the heights that buy the pool bar and the full
+	// three-line mark.
+	poolMin = 20
+	markMin = 13
 )
-
-func statusDot(status string) string {
-	dot := "●"
-	if status == "suspended" || status == "stopped" {
-		dot = "○"
-	}
-	if s, ok := statusStyles[status]; ok {
-		return s.Render(dot)
-	}
-	return faintStyle.Render(dot)
-}
-
-func statusText(status string) string {
-	if s, ok := statusStyles[status]; ok {
-		return s.Render(status)
-	}
-	return dimStyle.Render(status)
-}
 
 // ------------------------------------------------------------------- items
 
@@ -102,6 +83,9 @@ type boxItem struct {
 	status  string // empty until the per-id Get lands
 	memUsed int
 	memMiB  int
+	vcpu    int
+	milli   int
+	costUSD float64
 }
 
 func (b boxItem) FilterValue() string { return b.id }
@@ -122,58 +106,85 @@ func (d delegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		return
 	}
 	selected := index == m.Index()
+	width := m.Width()
 
 	prefix := "  "
 	if selected {
 		prefix = selBar.String()
 	}
 
+	// The new-box row is drawn in the free-pool texture — a dashed run, the
+	// same character the pool bar uses for memory nobody has claimed. Which is
+	// what a box you have not made yet IS. It is the one row that is an offer
+	// rather than a fact, and it should not look like a fact.
 	if b.id == newBoxID {
-		label := "＋ new box"
+		label := "+ new box"
+		styled := dimStyle.Render(label)
 		if selected {
-			fmt.Fprint(w, prefix+selName.Render(label))
-		} else {
-			fmt.Fprint(w, prefix+dimStyle.Render(label))
+			styled = selName.Render(label)
 		}
+		tail := width - lipgloss.Width(prefix) - lipgloss.Width(label) - 12
+		row := prefix + styled
+		if tail > 2 {
+			row += " " + lineStyle.Render(strings.Repeat(ui.Dashed, tail)) +
+				" " + faintStyle.Render("~400ms")
+		}
+		fmt.Fprint(w, row)
 		return
 	}
 
-	name := plainName.Render(padRight(b.id, 26))
+	// Column budget, widest-first. Every column below the terminal's width is
+	// dropped whole rather than squeezed: half a memory figure is not a smaller
+	// memory figure, it is a wrong one.
+	nameW := 22
+	if width < 56 {
+		nameW = max(width-24, 8)
+	}
+	name := truncate(b.id, nameW)
 	if selected {
-		name = selName.Render(padRight(b.id, 26))
-	}
-
-	status := b.status
-	var statusCol string
-	if status == "" {
-		statusCol = d.spin.View() + dimStyle.Render(" …")
+		name = selName.Render(padRight(name, nameW))
 	} else {
-		statusCol = statusDot(status) + " " + statusText(padRight(status, 10))
+		name = plainName.Render(padRight(name, nameW))
 	}
 
-	mem := ""
-	if b.memMiB > 0 {
-		mem = fmt.Sprintf("%d/%d MiB", b.memUsed, b.memMiB)
+	var statusCol string
+	if b.status == "" {
+		statusCol = d.spin.View() + dimStyle.Render(" reaching it…")
+	} else {
+		statusCol = statusDot(b.status) + " " + statusText(b.status)
 	}
 
-	fmt.Fprint(w, prefix+name+" "+padRightANSI(statusCol, 14)+" "+
-		dimStyle.Render(padRight(mem, 14))+" "+faintStyle.Render(compactAge(b.created)))
+	row := prefix + name + " " + padRightANSI(statusCol, 15)
+
+	if width >= 62 {
+		g := "        "
+		if live(b.status) && b.memMiB > 0 {
+			g = gauge(b.memUsed, b.memMiB, 8)
+		}
+		row += " " + padRightANSI(g, 8)
+	}
+	if width >= 78 {
+		row += " " + padRightANSI(memCell(b), 16)
+	}
+	row += " " + faintStyle.Render(compactAge(b.created))
+	fmt.Fprint(w, row)
 }
 
-func padRight(s string, n int) string {
-	if len(s) >= n {
-		return s
+// memCell says what a box draws from the pool.
+//
+// A parked box renders the SENTENCE and not an empty cell: that it costs
+// nothing is the single best fact about suspending, and the column used to
+// report it as blank.
+func memCell(b boxItem) string {
+	switch {
+	case b.status == "suspended" || b.status == "stopped":
+		return dimStyle.Render("nothing — parked")
+	case b.memMiB <= 0:
+		return faintStyle.Render("—")
+	default:
+		return dimStyle.Render(fmt.Sprintf("%.1f / %.1f GiB",
+			float64(b.memUsed)/1024, float64(b.memMiB)/1024))
 	}
-	return s + strings.Repeat(" ", n-len(s))
-}
-
-// padRightANSI pads by VISIBLE width, because styled strings carry escapes.
-func padRightANSI(s string, n int) string {
-	w := lipgloss.Width(s)
-	if w >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-w)
 }
 
 func compactAge(t time.Time) string {
@@ -193,6 +204,17 @@ func compactAge(t time.Time) string {
 	}
 }
 
+func vcpuText(b boxItem) string {
+	switch {
+	case b.milli > 0:
+		return fmt.Sprintf("%.2g vCPU", float64(b.milli)/1000)
+	case b.vcpu > 0:
+		return fmt.Sprintf("%d vCPU", b.vcpu)
+	default:
+		return "—"
+	}
+}
+
 // ---------------------------------------------------------------- messages
 
 type listedMsg struct {
@@ -208,21 +230,35 @@ type deletedMsg struct {
 	id  string
 	err error
 }
+type parkedMsg struct {
+	id   string
+	woke bool
+	err  error
+}
 type whoamiMsg struct {
 	login string
+}
+type poolMsg struct {
+	pool *api.Pool
 }
 
 // ------------------------------------------------------------------- model
 
 type pickerModel struct {
-	cl      *api.Client
-	title   string
-	login   string
-	list    list.Model
-	del     delegate
-	spin    spinner.Model
-	width   int
-	loading bool
+	cl    *api.Client
+	title string
+	login string
+	pool  *api.Pool
+
+	list list.Model
+	del  delegate
+	spin spinner.Model
+	// all is the source of truth; list holds whatever survives the filter.
+	all    []boxItem
+	filter textinput.Model
+
+	width, height int
+	loading       bool
 	// confirm holds the id `d` is waiting on; y deletes, anything else drops.
 	confirm string
 	note    string
@@ -265,19 +301,94 @@ func (m pickerModel) fetchWhoami() tea.Cmd {
 	}
 }
 
+// fetchPool is best effort, exactly as it is on `yas list`: the bar is worth
+// having and never worth failing the picker over, so a failure returns a nil
+// pool and the screen simply has no bar in it.
+func (m pickerModel) fetchPool() tea.Cmd {
+	cl := m.cl
+	return func() tea.Msg {
+		p, err := cl.Pool(context.Background())
+		if err != nil {
+			return poolMsg{}
+		}
+		return poolMsg{pool: p}
+	}
+}
+
 func (m pickerModel) Init() tea.Cmd {
-	return tea.Batch(m.spin.Tick, m.fetchList(), m.fetchWhoami())
+	return tea.Batch(m.spin.Tick, m.fetchList(), m.fetchWhoami(), m.fetchPool())
+}
+
+// sync rebuilds the visible list from m.all and the filter, keeping the
+// selection on the same BOX rather than the same index — a refresh that lands
+// while you are hovering a row must not move the row out from under the key
+// you are about to press.
+func (m *pickerModel) sync() {
+	var wantID string
+	if b, ok := m.list.SelectedItem().(boxItem); ok {
+		wantID = b.id
+	}
+	q := strings.ToLower(strings.TrimSpace(m.filter.Value()))
+	items := make([]list.Item, 0, len(m.all))
+	for _, it := range m.all {
+		if it.id == newBoxID {
+			// The offer is always reachable: a filter that matches nothing
+			// should still let you make the box you were looking for.
+			items = append(items, it)
+			continue
+		}
+		if q == "" || strings.Contains(strings.ToLower(it.id), q) {
+			items = append(items, it)
+		}
+	}
+	m.list.SetItems(items)
+	for i, it := range items {
+		if it.(boxItem).id == wantID {
+			m.list.Select(i)
+			break
+		}
+	}
+}
+
+// resize is the layout decision, in one place. See the const block above.
+func (m *pickerModel) resize() {
+	if m.width == 0 {
+		return
+	}
+	listW := m.width
+	if m.width >= detailMin {
+		listW = m.width - detailW - 3
+	}
+	m.list.SetSize(listW, max(m.height-m.chrome(), 1))
+}
+
+// chrome is every line the view spends on something that is not a box.
+func (m pickerModel) chrome() int {
+	n := 1 + 1 + 1 // leading blank, blank before list, footer
+	if m.height >= markMin {
+		n += 3
+	} else {
+		n++
+	}
+	if m.height >= poolMin {
+		n += 3 // blank, bar, legend
+	}
+	return n
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.list.SetSize(msg.Width, msg.Height-6)
+		m.width, m.height = msg.Width, msg.Height
+		m.resize()
 		return m, nil
 
 	case whoamiMsg:
 		m.login = msg.login
+		return m, nil
+
+	case poolMsg:
+		m.pool = msg.pool
 		return m, nil
 
 	case listedMsg:
@@ -286,30 +397,30 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note = "could not load boxes: " + msg.err.Error()
 			return m, nil
 		}
-		items := make([]list.Item, len(msg.items))
+		m.all = msg.items
+		m.sync()
 		cmds := make([]tea.Cmd, 0, len(msg.items))
-		for i, it := range msg.items {
-			items[i] = it
+		for _, it := range msg.items {
 			if it.id != newBoxID {
 				cmds = append(cmds, m.fetchStatus(it.id))
 			}
 		}
-		m.list.SetItems(items)
 		return m, tea.Batch(cmds...)
 
 	case statusMsg:
-		for i, it := range m.list.Items() {
-			b := it.(boxItem)
+		for i, b := range m.all {
 			if b.id != msg.id {
 				continue
 			}
 			if msg.ok {
 				b.status, b.memMiB, b.memUsed = msg.sb.Status, msg.sb.MemMiB, msg.sb.MemUsedMiB
+				b.vcpu, b.milli, b.costUSD = msg.sb.VcpuCount, msg.sb.MilliVcpu, msg.sb.CostUSD
 			} else {
 				b.status = "?"
 			}
-			m.list.SetItem(i, b)
+			m.all[i] = b
 		}
+		m.sync()
 		return m, nil
 
 	case deletedMsg:
@@ -318,7 +429,19 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.note = "deleted " + msg.id
-		return m, m.fetchList()
+		return m, tea.Batch(m.fetchList(), m.fetchPool())
+
+	case parkedMsg:
+		if msg.err != nil {
+			m.note = msg.err.Error()
+			return m, nil
+		}
+		if msg.woke {
+			m.note = msg.id + " is awake"
+		} else {
+			m.note = msg.id + " is parked — the pool has its memory back"
+		}
+		return m, tea.Batch(m.fetchList(), m.fetchPool())
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -328,6 +451,27 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// The filter owns the keyboard while it is focused, because every key
+		// it would otherwise steal — n, d, s, q — is a letter somebody is
+		// trying to type into a box name.
+		if m.filter.Focused() {
+			switch msg.String() {
+			case "esc":
+				m.filter.SetValue("")
+				m.filter.Blur()
+				m.sync()
+				return m, nil
+			case "enter":
+				m.filter.Blur()
+				m.sync()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.filter, cmd = m.filter.Update(msg)
+			m.sync()
+			return m, cmd
+		}
+
 		// A pending delete captures the next key entirely.
 		if m.confirm != "" {
 			id := m.confirm
@@ -340,6 +484,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note = ""
 			return m, nil
 		}
+
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			m.result = Result{Action: "quit"}
@@ -356,14 +501,46 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "n":
 			m.result = Result{Action: "form"}
 			return m, tea.Quit
+		case "/":
+			m.note = ""
+			m.filter.Focus()
+			return m, textinput.Blink
 		case "d":
 			if b, ok := m.list.SelectedItem().(boxItem); ok && b.id != newBoxID {
 				m.confirm = b.id
 			}
 			return m, nil
+		case "s":
+			// One key, both directions. Which one it means is a fact about the
+			// box, and the box already knows it — asking the person to
+			// remember whether this one is parked is asking them to do the
+			// screen's job.
+			b, ok := m.list.SelectedItem().(boxItem)
+			if !ok || b.id == newBoxID {
+				return m, nil
+			}
+			cl, id := m.cl, b.id
+			switch {
+			case live(b.status):
+				m.note = "parking " + id + "…"
+				return m, func() tea.Msg {
+					return parkedMsg{id: id, err: cl.Suspend(context.Background(), id)}
+				}
+			case parked(b.status):
+				m.note = "waking " + id + "…"
+				return m, func() tea.Msg {
+					return parkedMsg{id: id, woke: true, err: cl.Resume(context.Background(), id)}
+				}
+			default:
+				// failed, cancelled, or a status this CLI has not seen. There
+				// is no direction to move a box that is not in one of the two
+				// states the key toggles between.
+				m.note = "nothing to park or wake — " + id + " is " + statusWord(b.status)
+				return m, nil
+			}
 		case "r":
 			m.note = ""
-			return m, m.fetchList()
+			return m, tea.Batch(m.fetchList(), m.fetchPool())
 		}
 	}
 	var cmd tea.Cmd
@@ -371,66 +548,353 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// header is the brand on the left and the signed-in login on the right,
-// spread across the width.
+// --------------------------------------------------------------------- view
+
+// header is the wordmark from internal/ui, drawn bubbletea-side, with the
+// signed-in account on the right. Same mark, same three-line hero shape, same
+// order as the landing page: kicker, name, what this screen is.
 func (m pickerModel) header() string {
-	left := brandStyle.Render("yas") + dimStyle.Render("  ·  "+m.title)
 	right := ""
 	if m.login != "" {
 		right = dimStyle.Render(m.login)
+		if m.pool != nil && m.pool.Plan.Name != "" {
+			right += faintStyle.Render(" · " + m.pool.Plan.Name)
+		}
+	}
+
+	if m.height < markMin || m.width < 60 {
+		left := brandStyle.Render("yas") + dimStyle.Render("  ·  "+m.title)
+		return "  " + left + m.spread(left, right)
+	}
+
+	mark := ui.Mark(lipgloss.DefaultRenderer())
+	rows := [3]string{
+		eyebrow("yet another sandbox"),
+		brandStyle.Render("yas"),
+		dimStyle.Render(m.title),
+	}
+	var b strings.Builder
+	for i := range mark {
+		lineText := mark[i] + "  " + rows[i]
+		b.WriteString("  " + lineText)
+		if i == 0 {
+			b.WriteString(m.spread(lineText, right))
+		}
+		if i < 2 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// spread is the gap that pushes right to the right margin.
+func (m pickerModel) spread(left, right string) string {
+	if right == "" {
+		return ""
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
 	if gap < 1 {
-		gap = 1
+		return ""
 	}
-	return "  " + left + strings.Repeat(" ", gap) + right
+	return strings.Repeat(" ", gap) + right
+}
+
+// poolBlock is the landing page's picture, on the screen people actually use.
+//
+// It is ALWAYS three lines once the layout has budgeted for it, even before
+// the pool response lands and even if it never lands. Returning nothing until
+// there was something to draw made the first frames two lines short, so the
+// list and the footer sat two rows high and then jumped down the moment
+// /v1/pool answered — a flinch on every single run of the program, in the
+// first half second, which is the half second that decides whether a CLI feels
+// solid.
+func (m pickerModel) poolBlock() string {
+	w := m.width - 4
+	segs := make([]poolSeg, 0, len(m.all))
+	for _, b := range m.all {
+		if b.id != newBoxID && live(b.status) && b.memMiB > 0 {
+			segs = append(segs, poolSeg{name: b.id, mib: b.memMiB})
+		}
+	}
+	bar, legend := PoolBar(m.pool, segs, w)
+	if bar == "" {
+		// No pool, or no room for one. Hold the rows open rather than an
+		// apology: a bar that has not arrived is not news.
+		return "\n\n"
+	}
+	return "\n  " + bar + "\n  " + legend
+}
+
+// detail is the right-hand pane: what the selected row cannot fit, and the two
+// or three keys that act on it.
+func (m pickerModel) detail() string {
+	b, ok := m.list.SelectedItem().(boxItem)
+	if !ok {
+		return ""
+	}
+	inner := detailW - 3
+	var s strings.Builder
+
+	if b.id == newBoxID {
+		s.WriteString(eyebrow("new box") + "\n\n")
+		s.WriteString(dimStyle.Render("a real computer you can") + "\n")
+		s.WriteString(dimStyle.Render("throw away, and get back.") + "\n\n")
+		s.WriteString(faintStyle.Render("root · Docker · SSH") + "\n")
+		s.WriteString(faintStyle.Render("booted in about 400ms") + "\n")
+		s.WriteString(faintStyle.Render("parked, it costs nothing") + "\n\n")
+		s.WriteString(key("↵", "shape it and go"))
+		return s.String()
+	}
+
+	s.WriteString(brandStyle.Render(truncate(b.id, inner)) + "\n")
+	if b.status == "" {
+		s.WriteString(dimStyle.Render("asking the gateway…") + "\n")
+	} else {
+		s.WriteString(statusDot(b.status) + " " + statusText(b.status) +
+			faintStyle.Render("  "+compactAge(b.created)) + "\n")
+	}
+	s.WriteString("\n")
+
+	switch {
+	case live(b.status) && b.memMiB > 0:
+		s.WriteString(gauge(b.memUsed, b.memMiB, inner) + "\n")
+		s.WriteString(dimStyle.Render(fmt.Sprintf("%.1f of %.1f GiB in use",
+			float64(b.memUsed)/1024, float64(b.memMiB)/1024)) + "\n")
+	case b.status == "suspended":
+		s.WriteString(lineStyle.Render(strings.Repeat(ui.Dashed, inner)) + "\n")
+		s.WriteString(dimStyle.Render("drawing nothing from the pool") + "\n")
+	}
+	s.WriteString("\n")
+
+	field := func(k, v string) {
+		s.WriteString(faintStyle.Render(padRight(k, 7)) + dimStyle.Render(v) + "\n")
+	}
+	field("cpu", vcpuText(b))
+	if b.costUSD > 0 {
+		field("cost", fmt.Sprintf("$%.2f so far", b.costUSD))
+	}
+	s.WriteString("\n")
+
+	// Enter on a parked box does NOT fail — sshutil.Connect resumes it first
+	// and then connects, which is the best thing about parking one and was the
+	// thing this pane did not say. Naming it here is the difference between a
+	// person suspending freely and a person leaving boxes running in case.
+	if parked(b.status) {
+		s.WriteString(key("↵", "wake it, then a shell") + "\n")
+		s.WriteString(key("s", "wake it") + "\n")
+	} else {
+		s.WriteString(key("↵", "a shell in it") + "\n")
+		if live(b.status) {
+			s.WriteString(key("s", "park it") + "\n")
+		}
+	}
+	s.WriteString(key("d", "delete it"))
+	return s.String()
 }
 
 func (m pickerModel) footer() string {
 	switch {
 	case m.confirm != "":
-		return "  " + warnStyle.Render("delete "+m.confirm+"?") + " " + dimStyle.Render("y confirms · any other key cancels")
+		return "  " + warnStyle.Render("delete "+m.confirm+"?") + " " +
+			dimStyle.Render("y confirms · any other key cancels")
+	case m.filter.Focused():
+		return "  " + eyebrowStyle.Render("/") + " " + m.filter.View() + "  " +
+			faintStyle.Render("↵ keeps it · esc clears it")
 	case m.note != "":
 		return "  " + dimStyle.Render(m.note)
-	default:
-		keys := []string{"↵ connect", "n new", "d delete", "r refresh", "q quit"}
-		return "  " + faintStyle.Render(strings.Join(keys, "   "))
 	}
+	// The legend is trimmed by MEASURING it, not by guessing a width at which
+	// it stops fitting. Both guesses were wrong — the full row is 88 cells and
+	// was shown at 80, the short row is 50 and was shown at 48 — and a legend
+	// one cell too wide wraps, which pushes the whole list up a line.
+	//
+	// It sheds by IMPORTANCE and prints in reading order, which are two
+	// different orders. Shedding off the right end instead cost `q quit` first,
+	// at 80 columns — taking the one key somebody needs when they are lost, and
+	// keeping `r refresh`.
+	type legendKey struct {
+		k, label string
+		rank     int // higher goes first
+	}
+	all := []legendKey{
+		{"↵", "connect", 0},
+		{"n", "new", 1},
+		{"s", "park/wake", 3},
+		{"d", "delete", 4},
+		{"/", "filter", 5},
+		{"r", "refresh", 6},
+		{"q", "quit", 2},
+	}
+	keys := make([]string, 0, len(all))
+	shed := func() {
+		worst := -1
+		for i, e := range all {
+			if worst < 0 || e.rank > all[worst].rank {
+				worst = i
+			}
+		}
+		all = append(all[:worst], all[worst+1:]...)
+	}
+	render := func() {
+		keys = keys[:0]
+		for _, e := range all {
+			keys = append(keys, key(e.k, e.label))
+		}
+	}
+	render()
+	sep := faintStyle.Render("  ·  ")
+
+	// The count on the right is the one thing a list with no pagination hides:
+	// how much of it you are looking at. It is the first thing dropped.
+	count := ""
+	if n := len(m.list.Items()) - 1; n > 0 {
+		count = faintStyle.Render(fmt.Sprintf("%d %s", n, plural(n, "box", "boxes")))
+		if q := strings.TrimSpace(m.filter.Value()); q != "" {
+			count = eyebrowStyle.Render("/"+q) + faintStyle.Render(fmt.Sprintf("  %d matching", n))
+		}
+	}
+	for {
+		legend := strings.Join(keys, sep)
+		room := m.width - lipgloss.Width(legend) - 2
+		if room >= 0 {
+			// The count needs a gap in front of it or it reads as another key.
+			// spread is given the legend WITHOUT its indent, the same as the
+			// header gives it the mark line without one, so the count and the
+			// login land on the same right margin.
+			if count != "" && room >= lipgloss.Width(count)+8 {
+				legend += m.spread(legend, count)
+			}
+			return "  " + legend
+		}
+		if len(all) == 1 {
+			return "  " + truncate("q quits", max(m.width-2, 0))
+		}
+		shed()
+		render()
+	}
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func (m pickerModel) View() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(m.header())
-	b.WriteString("\n\n")
-	if m.loading {
-		b.WriteString("  " + m.spin.View() + dimStyle.Render(" loading your boxes…") + "\n")
-	} else if len(m.list.Items()) <= 1 {
-		b.WriteString(m.list.View())
-		b.WriteString("  " + dimStyle.Render("no boxes yet — the first one is a keypress away") + "\n")
-	} else {
-		b.WriteString(m.list.View())
+	b.WriteString("\n")
+	if m.height >= poolMin {
+		b.WriteString(m.poolBlock() + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.footer())
+
+	switch {
+	case m.loading:
+		// Not a bare spinner: the first frame of a program is the frame that
+		// decides whether it feels fast, and "loading…" says nothing that the
+		// spinner did not already say.
+		b.WriteString("  " + m.spin.View() + dimStyle.Render(" asking the gateway what you have…"))
+		b.WriteString(strings.Repeat("\n", max(m.list.Height()-1, 1)))
+	case len(m.list.Items()) <= 1 && strings.TrimSpace(m.filter.Value()) == "":
+		b.WriteString(m.emptyState())
+	default:
+		body := m.list.View()
+		if m.width >= detailMin && m.list.Height() >= detailMinH {
+			h := m.list.Height()
+			left := lipgloss.NewStyle().Width(m.width - detailW - 3).Render(body)
+			// Height, not just Width: the divider is a COLUMN, and a border
+			// that stopped where the pane's text happened to stop drew a rule
+			// that petered out two thirds of the way down the screen.
+			//
+			// The clamp above it is the short-and-wide window — a 110×16 pane
+			// has room for the pane's width and not its content, and a pane
+			// taller than the list it sits beside pushes the footer off the
+			// bottom of the frame.
+			right := lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder(), false, false, false, true).
+				BorderForeground(line).
+				PaddingLeft(2).Width(detailW).Height(h).
+				MaxHeight(h).Render(m.detail())
+			body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+		}
+		b.WriteString(body)
+	}
+
 	b.WriteString("\n")
+	b.WriteString(m.footer())
 	return b.String()
+}
+
+// emptyState is the first thing a new account sees, so it is the pitch and the
+// keystroke, not an apology.
+//
+// It WRITES INTO the list's own frame rather than appending to it. The list
+// already pads itself out to the height it was given, so a message printed
+// after it made a block twice the height of the window — the header scrolled
+// off the top and the footer was never reached. There is one frame; the message
+// goes in the blank line under the offer.
+func (m pickerModel) emptyState() string {
+	lines := strings.Split(m.list.View(), "\n")
+
+	msg := "  " + dimStyle.Render("no boxes yet.")
+	if tail := m.width - lipgloss.Width(msg) - 2; tail >= 48 {
+		msg += " " + faintStyle.Render("the first one is a keypress and about 400ms away.")
+	}
+	if lipgloss.Width(msg) > m.width {
+		msg = "  " + dimStyle.Render(truncate("no boxes yet", max(m.width-2, 0)))
+	}
+
+	switch {
+	case len(lines) > 2:
+		lines[2] = msg
+	default:
+		lines = append(lines, msg)
+	}
+	if h := m.list.Height(); len(lines) > h {
+		lines = lines[:h]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // RunPicker shows the box list and returns what the user chose. An Action of
 // "form" means "they want a new box; show the form" — the caller decides,
 // because the form is its own program.
+//
+// # It takes the alternate screen, and gives it back
+//
+// The picker is a full-height program now — a wordmark, a pool bar, a list and
+// a detail pane — and drawing that inline would push whatever the person was
+// reading off the top of their scrollback every time they ran `yas`. The
+// alternate screen is exactly the deal a picker wants: take the whole terminal,
+// then leave no trace of having done so. It is also the honest one. What the
+// picker leaves behind is the ssh session it chose, and that is the thing worth
+// having in the scrollback.
 func RunPicker(cl *api.Client, title string) (Result, error) {
-	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(lipgloss.NewStyle().Foreground(accent)))
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(accent)))
 	del := delegate{spin: sp}
 	l := list.New(nil, del, 0, 0)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
+	// Filtering is ours, not the list's: the built-in one renders into the
+	// title bar this picker does not have.
 	l.SetFilteringEnabled(false)
 	l.SetShowPagination(false)
-	m := pickerModel{cl: cl, title: title, list: l, del: del, spin: sp, loading: true}
-	out, err := tea.NewProgram(m).Run()
+
+	fi := textinput.New()
+	fi.Prompt = ""
+	fi.Placeholder = "name"
+	fi.PlaceholderStyle = faintStyle
+	fi.CharLimit = 40
+	fi.Width = 18
+	fi.Cursor.Style = lipgloss.NewStyle().Foreground(accent)
+
+	m := pickerModel{cl: cl, title: title, list: l, del: del, spin: sp, filter: fi, loading: true}
+	out, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
 		return Result{}, err
 	}

@@ -38,9 +38,13 @@ var version = "dev"
 func usage(w *os.File) {
 	tty := ui.TTY(w)
 	if tty {
+		// The landing page's hero, in its order: kicker, name, promise. The
+		// joke stays on the third line rather than the first — the eyebrow is
+		// letter-spaced, and letter-spaced punctuation reads as a typo.
 		fmt.Fprint(w, ui.Wordmark(w,
-			"yet another sandbox — yes, we know.",
-			"a real computer you can throw away, and get back"))
+			"yet another sandbox",
+			"yas "+version,
+			"yes, we know — a real computer you can throw away, and get back"))
 		fmt.Fprintln(w)
 	}
 

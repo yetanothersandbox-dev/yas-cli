@@ -20,6 +20,7 @@ package ui
 
 import (
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -27,25 +28,43 @@ import (
 // The palette. One colour per MEANING, never per place it is used — a second
 // blue for a second purpose is how a palette stops being one.
 //
-// AdaptiveColor throughout: lipgloss asks the terminal for its background and
-// picks the Light or Dark value, so nothing here is ever a hard-coded white
-// that vanishes on a light theme. When the background cannot be queried there
-// is no terminal, and nothing is coloured at all.
+// # These are the website's tokens, not a second opinion
+//
+// The Dark values are internal/web/ui/src/styles.css converted out of oklch()
+// into sRGB, token for token: --color-accent is Accent, --color-ok is Good,
+// --color-text-muted is Subtle. The CLI used to run on a purple of its own,
+// which meant the product had two accents and neither was the brand's. The
+// amber is the site's, and the site's is amber because the thing underneath is
+// Firecracker.
+//
+// The site is dark-only and a terminal is not, so each token also carries a
+// Light value: the same hue and chroma, pulled down in lightness until it holds
+// contrast on paper-white. Nothing here is a hard-coded white that vanishes on
+// a light theme. When the background cannot be queried there is no terminal,
+// and nothing is coloured at all.
 var (
 	// Accent is identity, selection, and a command the reader should type.
-	Accent = lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#9D99FF"}
+	Accent = lipgloss.AdaptiveColor{Light: "#AF6700", Dark: "#EEA743"}
+	// AccentBright is the accent under focus: a selected row, a live cursor.
+	AccentBright = lipgloss.AdaptiveColor{Light: "#8F5400", Dark: "#FFBA59"}
+	// AccentDim is the accent when it is texture rather than emphasis — the
+	// second box in a pool bar, the rule under a heading.
+	AccentDim = lipgloss.AdaptiveColor{Light: "#C38323", Dark: "#AF7A31"}
 	// Good is running, and a thing that worked.
-	Good = lipgloss.AdaptiveColor{Light: "#1A8917", Dark: "#3DDC5B"}
+	Good = lipgloss.AdaptiveColor{Light: "#008039", Dark: "#54C57A"}
 	// Warn is busy, waiting, and a destructive question.
-	Warn = lipgloss.AdaptiveColor{Light: "#B7791F", Dark: "#F5C043"}
+	Warn = lipgloss.AdaptiveColor{Light: "#9B7E00", Dark: "#E9C944"}
 	// Info is a transient state: starting, resuming.
-	Info = lipgloss.AdaptiveColor{Light: "#0B7285", Dark: "#4DD0E1"}
+	Info = lipgloss.AdaptiveColor{Light: "#0E7397", Dark: "#64C4F0"}
 	// Danger is failed, and a refusal.
-	Danger = lipgloss.AdaptiveColor{Light: "#D0342C", Dark: "#FF6B61"}
+	Danger = lipgloss.AdaptiveColor{Light: "#C21725", Dark: "#ED5350"}
 	// Subtle is secondary text and metadata.
-	Subtle = lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
+	Subtle = lipgloss.AdaptiveColor{Light: "#616368", Dark: "#96989D"}
 	// Faint is a key legend or a hint: present, and not competing.
-	Faint = lipgloss.AdaptiveColor{Light: "#B2B2B2", Dark: "#4A4A4A"}
+	Faint = lipgloss.AdaptiveColor{Light: "#8D8F94", Dark: "#6F7276"}
+	// Line is a rule, a border, and the unfilled half of a gauge. It is the
+	// site's --color-border-strong, which is white at 15% over near-black.
+	Line = lipgloss.AdaptiveColor{Light: "#C9CBCF", Dark: "#3B3D41"}
 )
 
 // The glyph vocabulary.
@@ -60,6 +79,16 @@ const (
 	Cross   = "✗"
 	Arrow   = "→" // the next thing to do
 	Point   = "▸" // focus
+
+	// Solid and Dashed are the site's one recurring idea, in two characters:
+	// a pool bar draws what is RUNNING solid and what is FREE dashed, and so
+	// does every gauge in the CLI. See tui.PoolBar.
+	Solid  = "█"
+	Dashed = "┄"
+
+	// Cursor is the block in the brand mark, and the caret the site's terminal
+	// component blinks. Same shape, same meaning.
+	Cursor = "▊"
 )
 
 // Out and Err render to their own stream. See the package comment.
@@ -93,19 +122,70 @@ func Bold(fg lipgloss.TerminalColor) lipgloss.Style {
 	return Err.NewStyle().Bold(true).Foreground(fg)
 }
 
-// wordmark is the identity block: a box, because the product is a box.
+// The mark: the website's, in cells.
+//
+// components/site-header.tsx draws a bordered rounded square with a fat amber
+// block and a small faint bar inside it — a terminal with a cursor in it. That
+// is three characters away from being drawable in a terminal, so it is drawn in
+// a terminal: rounded border, Cursor in Accent, a low bar in Faint.
 //
 // Not figlet letters. Claude Code's start block is not big type either — it is a
 // small mark, a bold name, and dim metadata, and that reads as deliberate where
-// large ASCII reads as 2003. Every character is a single-cell block element, so
-// the three lines cannot drift out of alignment on any font.
+// large ASCII reads as 2003. Every character is single-cell, so the three lines
+// cannot drift out of alignment on any font.
 const (
-	markTop = "▛▀▀▀▀▀▜"
-	markMid = "▌ yas ▐"
-	markBot = "▙▄▄▄▄▄▟"
+	markTop = "╭─────╮"
+	markBot = "╰─────╯"
+	// markMid is assembled per-piece because its two inner glyphs are two
+	// different colours. Its printed width matches the other two lines.
+	markMidL = "│ "
+	markMidR = " │"
 )
 
-// Wordmark renders the identity block with two lines of metadata beside it.
+// MarkWidth is the printed width of one line of the mark, for callers laying
+// text out beside it.
+const MarkWidth = 7
+
+// Mark returns the three lines of the brand mark, coloured for renderer r.
+//
+// Exported because the picker draws the same mark bubbletea-side, and a second
+// hand-rolled copy over there is how one mark becomes two.
+func Mark(r *lipgloss.Renderer) [3]string {
+	edge := r.NewStyle().Foreground(Line)
+	cur := r.NewStyle().Foreground(Accent)
+	rest := r.NewStyle().Foreground(Faint)
+	if os.Getenv("TERM") == "dumb" {
+		return [3]string{"+-----+", "| |_  |", "+-----+"}
+	}
+	return [3]string{
+		edge.Render(markTop),
+		edge.Render(markMidL) + cur.Render(Cursor) + " " + rest.Render("▁") + edge.Render(markMidR),
+		edge.Render(markBot),
+	}
+}
+
+// Eyebrow is the site's kicker: mono, uppercase, letter-spaced, in the accent.
+//
+// The tracking is real letter-spacing on the web and there is no such thing in
+// a terminal, so it is spelled with the spaces — "Y A S" — which is the same
+// effect by the only means a grid of cells has. Used once per screen, above the
+// thing it names, exactly as the site uses it.
+func Eyebrow(s string) string {
+	out := make([]rune, 0, len(s)*2)
+	for i, r := range strings.ToUpper(s) {
+		if i > 0 {
+			out = append(out, ' ')
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
+// Wordmark renders the identity block: the mark, and the site's hero beside it.
+//
+// The three lines to the right are the landing page's three, in its order — the
+// eyebrow, the name, then the promise. A person who has seen the website has
+// already read this, which is the whole point of a wordmark.
 //
 // It appears on exactly three commands — help, login, and version on a terminal
 // — because those are the three "who am I" moments. It never appears on list,
@@ -122,33 +202,33 @@ const (
 //
 // # ASCII only for a terminal that cannot draw, not for one that cannot colour
 //
-// The block elements are a CHARSET question and colour is a separate one. An
-// earlier version fell back to `+-----+` whenever the colour profile was plain,
-// which meant a perfectly capable monochrome terminal — or anything under
-// `script` — lost the mark for no reason. Now the mark is drawn either way and
-// only the colour is conditional; TERM=dumb is the one case that gets ASCII.
-func Wordmark(w *os.File, tagline, meta string) string {
+// The box-drawing characters are a CHARSET question and colour is a separate
+// one. An earlier version fell back to `+-----+` whenever the colour profile
+// was plain, which meant a perfectly capable monochrome terminal — or anything
+// under `script` — lost the mark for no reason. Now the mark is drawn either
+// way and only the colour is conditional; TERM=dumb is the one case that gets
+// ASCII.
+func Wordmark(w *os.File, eyebrow, title, sub string) string {
 	if !TTY(w) {
 		return ""
-	}
-	if os.Getenv("TERM") == "dumb" {
-		return "+-----+\n| yas |\n+-----+\n"
 	}
 	r := Err
 	if w == os.Stdout {
 		r = Out
 	}
-	edge := r.NewStyle().Foreground(Accent)
-	name := r.NewStyle().Bold(true).Foreground(Accent)
-	dim := r.NewStyle().Foreground(Subtle)
+	m := Mark(r)
+	kick := r.NewStyle().Foreground(Accent).Render(Eyebrow(eyebrow))
+	name := r.NewStyle().Bold(true).Foreground(Accent).Render(title)
+	dim := r.NewStyle().Foreground(Subtle).Render(sub)
 
-	top := edge.Render(markTop)
-	mid := edge.Render("▌ ") + name.Render("yas") + edge.Render(" ▐")
-	bot := edge.Render(markBot)
-
-	out := top + "\n" + mid + "  " + tagline + "\n" + bot
-	if meta != "" {
-		out += "  " + dim.Render(meta)
+	rows := [3]string{kick, name, dim}
+	var b strings.Builder
+	for i, mline := range m {
+		b.WriteString(mline)
+		if rows[i] != "" {
+			b.WriteString("  " + rows[i])
+		}
+		b.WriteString("\n")
 	}
-	return out + "\n"
+	return b.String()
 }

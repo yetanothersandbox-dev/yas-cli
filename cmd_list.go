@@ -176,7 +176,11 @@ func statusCell(status string) string {
 	case "failed":
 		c = ui.Danger
 	case "suspended":
-		dot, c = ui.DotIdle, ui.Accent
+		// AccentDim, not Accent. The accent is now the brand amber and it
+		// carries selection and identity everywhere else — a parked box
+		// wearing the full-strength accent would be the loudest row in a list
+		// of boxes that are actually running.
+		dot, c = ui.DotIdle, ui.AccentDim
 	case "stopped":
 		dot, c = ui.DotIdle, ui.Faint
 	case "":
