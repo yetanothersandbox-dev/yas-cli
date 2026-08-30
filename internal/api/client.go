@@ -479,3 +479,48 @@ func (c *Client) SetBoxDefaults(ctx context.Context, memMiB, milliVcpu int) (Box
 	}
 	return out, nil
 }
+
+// RegionChoice is one entry in the catalogue.
+type RegionChoice struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Live is false for a region that is announced and not yet running. It
+	// takes no work, and is listed anyway so the next one does not appear one
+	// day with no warning.
+	Live bool `json:"live"`
+}
+
+// RegionSettings is where an account's boxes are placed.
+//
+// Region is what was chosen and may be empty; EffectiveRegion is what placement
+// will actually prefer, because an empty or not-yet-live choice resolves to the
+// default and a caller should not have to know that rule.
+type RegionSettings struct {
+	Region          string         `json:"region"`
+	EffectiveRegion string         `json:"effectiveRegion"`
+	Regions         []RegionChoice `json:"regions"`
+}
+
+// Region reads where this account's boxes go.
+func (c *Client) Region(ctx context.Context) (RegionSettings, error) {
+	var out RegionSettings
+	if err := c.do(ctx, http.MethodGet, "/v1/user/region", nil, &out); err != nil {
+		return RegionSettings{}, err
+	}
+	return out, nil
+}
+
+// SetRegion moves them. Either a region id, or an IANA time zone to work one
+// out from — the CLI sends the zone when the caller has expressed no preference,
+// which is how a machine that has never been placed places itself.
+func (c *Client) SetRegion(ctx context.Context, id, timeZone string) (RegionSettings, error) {
+	body := struct {
+		Region   string `json:"region,omitempty"`
+		TimeZone string `json:"timeZone,omitempty"`
+	}{id, timeZone}
+	var out RegionSettings
+	if err := c.do(ctx, http.MethodPut, "/v1/user/region", body, &out); err != nil {
+		return RegionSettings{}, err
+	}
+	return out, nil
+}
