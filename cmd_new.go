@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"flag"
 
@@ -14,6 +14,7 @@ import (
 	"github.com/Gilbert09/yas/clients/yas/internal/config"
 	"github.com/Gilbert09/yas/clients/yas/internal/names"
 	"github.com/Gilbert09/yas/clients/yas/internal/sshutil"
+	"github.com/Gilbert09/yas/clients/yas/internal/ui"
 )
 
 // cmdNew creates one bare box and connects. A bare create is synchronous —
@@ -249,8 +250,26 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		GitHubToken:  unlessSuppressed(suppressed, cfg.GitHubTokenResolved()),
 		OpenAIKey:    unlessSuppressed(suppressed, cfg.OpenAIKeyResolved()),
 	}
-	fmt.Fprintf(os.Stderr, "creating %s...\n", id)
-	if err := cl.Create(ctx, req); err != nil {
+	// The create is synchronous by contract — it returns when the guest is UP —
+	// so the CLI can time it and print the product's own headline number, every
+	// time, measured rather than claimed. That is the most persuasive line this
+	// tool has and it was being thrown away.
+	sp := ui.Start("creating " + id + "…")
+	// A create can queue behind capacity, and the client retries a 503 twice
+	// before giving up. Silence through that reads as a hang, so the label
+	// changes once the wait stops being normal.
+	relabelled := make(chan struct{})
+	go func() {
+		select {
+		case <-time.After(8 * time.Second):
+			sp.Relabel("creating " + id + "… the fleet is finding room. Hold.")
+		case <-relabelled:
+		}
+	}()
+	cerr := cl.Create(ctx, req)
+	close(relabelled)
+	if err := cerr; err != nil {
+		sp.Stop("")
 		switch {
 		case api.ErrorKind(err) == "conflict":
 			return "", fmt.Errorf("the name %q is unavailable; pick another", id)
@@ -262,7 +281,15 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 			return "", err
 		}
 	}
-	fmt.Println(id)
+	sp.Stop(ui.OK(fmt.Sprintf("%s — up in %dms", id, sp.Elapsed().Milliseconds())))
+	// The id is NOT printed here.
+	//
+	// createBox is called by `yas new`, by the picker, and by the passthrough,
+	// and only one of them wants the id on stdout: `yas new -no-connect`, which
+	// prints it itself. Printing it here as well put the id on stdout TWICE for
+	// that one caller — so `yas new -no-connect | xargs yas ssh` was handed two
+	// names and used the wrong one. The others print it and then take the
+	// terminal for ssh, where a stray line is noise rather than data.
 	if cfg2, err := config.Load(); err == nil {
 		cfg2.LastBox = id
 		_ = config.Save(cfg2)

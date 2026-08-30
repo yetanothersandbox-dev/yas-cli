@@ -183,6 +183,45 @@ func (c *Client) List(ctx context.Context) ([]SandboxSummary, error) {
 	return out.Sandboxes, nil
 }
 
+// Pool is what this account is holding against what it may hold.
+//
+// The CLI went without it for a long time and was poorer for it: the product is
+// sold as a POOL — that is the whole pricing model and the whole reason
+// suspending is worth doing — and the command people run most could not say how
+// full theirs was. One call, on the one screen where the answer is useful.
+//
+// Zero limits mean unbounded, matching the server: an operator-raised account
+// has no ceiling and must not be drawn as if it were at 0% of nothing.
+type Pool struct {
+	Plan struct {
+		Name string `json:"name"`
+	} `json:"plan"`
+	MemMiB struct {
+		Limit int `json:"limit"`
+		Used  int `json:"used"`
+		Free  int `json:"free"`
+	} `json:"memMib"`
+	MilliVcpu struct {
+		Limit int `json:"limit"`
+		Used  int `json:"used"`
+	} `json:"milliVcpu"`
+	Boxes struct {
+		Running   int `json:"running"`
+		Suspended int `json:"suspended"`
+		Total     int `json:"total"`
+	} `json:"boxes"`
+}
+
+// Pool reads the caller's pool. Errors are the caller's to ignore: a header
+// line is worth having and never worth failing a command over.
+func (c *Client) Pool(ctx context.Context) (*Pool, error) {
+	var p Pool
+	if err := c.do(ctx, http.MethodGet, "/v1/pool", nil, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // Get reads one sandbox's full record.
 //
 // The response is an ENVELOPE — `{"sandbox": {...}, "terminal": bool,

@@ -21,30 +21,72 @@ import (
 	"github.com/Gilbert09/yas/clients/yas/internal/api"
 	"github.com/Gilbert09/yas/clients/yas/internal/cliio"
 	"github.com/Gilbert09/yas/clients/yas/internal/config"
+	"github.com/Gilbert09/yas/clients/yas/internal/ui"
 )
 
 // version is stamped by the Makefile; "dev" from a bare `go build`.
 var version = "dev"
 
+// usage is the CLI's front door, and the one place the wordmark earns its keep.
+//
+// Grouped by WHEN somebody needs a command rather than alphabetically: a person
+// reading help for the first time wants "how do I start", and a person reading
+// it for the tenth wants "what was that flag". A flat list serves neither.
+//
+// The text is identical piped, so `yas --help | grep suspend` still works. Only
+// the colour and the mark are conditional.
 func usage(w *os.File) {
-	fmt.Fprintf(w, `yas — sandboxes from your terminal
+	tty := ui.TTY(w)
+	if tty {
+		fmt.Fprint(w, ui.Wordmark(w,
+			"yet another sandbox — yes, we know.",
+			"a real computer you can throw away, and get back"))
+		fmt.Fprintln(w)
+	}
 
-usage:
-  yas                       pick a box (or create one) and connect
-  yas new [flags]           create a box and connect
-  yas list                  list your boxes
-  yas ssh <id>              connect to a box
-  yas exec <id> -- cmd...   run one command, stream its output
-  yas suspend|resume <id>   pause and unpause a box
-  yas rm <id>               delete a box
-  yas login                 sign in with GitHub (or paste a key); provider keys via -anthropic/-openai
-  yas keys                  list, create and revoke this account's API keys (service accounts)
-  yas version               print the version
+	head := func(s string) string {
+		if !tty {
+			return s
+		}
+		return ui.Err.NewStyle().Bold(true).Render(s)
+	}
+	cmd := func(s string) string {
+		if !tty {
+			return s
+		}
+		return ui.S(ui.Accent).Render(s)
+	}
+	note := func(s string) string {
+		if !tty {
+			return s
+		}
+		return ui.S(ui.Subtle).Render(s)
+	}
+	row := func(c, d string) {
+		fmt.Fprintf(w, "  %s%s\n", cmd(fmt.Sprintf("%-26s", c)), note(d))
+	}
 
-anything else runs INSIDE a box:
-  yas claude                a claude console in a fresh (or picked) box
-  yas <cmd> [args...]       any command; -b <id> targets a box, --new forces a fresh one
-`)
+	fmt.Fprintln(w, head("start here"))
+	row("yas login", "sign in with GitHub, or paste a key")
+	row("yas new [flags] [name]", "a fresh box, connected in about 400ms")
+	row("yas", "pick a box (or make one) and connect")
+
+	fmt.Fprintln(w, "\n"+head("day to day"))
+	row("yas list", "your boxes, and what they draw from the pool")
+	row("yas ssh <id>", "a shell in a box")
+	row("yas exec <id> -- cmd...", "run one command, stream its output; script-safe")
+	row("yas suspend <id>", "park it — the pool gets its memory back")
+	row("yas resume <id>", "unpark it, usually before you finish blinking")
+	row("yas rm <id>", "delete a box and everything in it")
+
+	fmt.Fprintln(w, "\n"+head("account"))
+	row("yas keys", "API keys for machines that are not you")
+	row("yas login -anthropic", "store a provider key; a box never sees it")
+	row("yas version", "print the version")
+
+	fmt.Fprintln(w, "\n"+head("anything else runs INSIDE a box"))
+	row("yas claude", "a claude console in a box that is not your laptop")
+	row("yas <cmd> [args...]", "any command; -b <id> picks the box, --new forces a fresh one")
 }
 
 // exitError carries a remote command's exit code to os.Exit without losing
@@ -105,7 +147,12 @@ func main() {
 		if errors.As(err, &ee) {
 			os.Exit(ee.code)
 		}
-		fmt.Fprintln(os.Stderr, "yas:", err)
+		// Every refusal in the CLI arrives here, which is why the renderer is
+		// here and not spread across the commands. On a terminal it gets a
+		// headline, the server's own sentence, and the commands that fix it; in
+		// a pipe it collapses to the single `yas: ...` line scripts have always
+		// seen. See ui.Refusal.
+		ui.Refusal(os.Stderr, api.ErrorKind(err), err.Error(), ui.StderrTTY())
 		os.Exit(1)
 	}
 }
