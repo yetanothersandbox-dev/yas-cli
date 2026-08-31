@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -25,6 +26,7 @@ func cmdLogin(args []string) error {
 	openai := fs.Bool("openai", false, "store an OpenAI key for new boxes")
 	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
 	device := fs.Bool("device", false, "use the GitHub device flow (for SSH sessions and browserless machines)")
+	force := fs.Bool("force", false, "sign in again even if this machine already holds a working key")
 	baseURL := fs.String("url", "", "gateway base URL (default "+api.DefaultBaseURL+")")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -48,6 +50,26 @@ func cmdLogin(args []string) error {
 	case *openai:
 		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
 	default:
+		// Already signed in? Then do nothing, and say so.
+		//
+		// Every sign-in MINTS a key server-side, and only the SHA-256 of the
+		// secret is ever stored — so a key cannot be handed back a second time,
+		// and "reuse the existing one" has to mean "do not ask for another".
+		// Without this, running `yas login` twice left two live credentials on
+		// the account with the same name and no way to tell them apart, which
+		// is what three identical `signup:` keys on one account turned out to
+		// be.
+		//
+		// The check is a real authenticated call rather than "is a key
+		// present": a revoked or rotated key is exactly the case where somebody
+		// SHOULD be sent through the flow, and a config file cannot know that.
+		if !*force && cfg.APIKey != "" {
+			if login, ok := whoami(cfg); ok {
+				fmt.Fprintf(os.Stderr, "already signed in as %s — `yas login -force` to sign in again\n", login)
+				return nil
+			}
+		}
+
 		// The front door. Self-serve when the build knows its GitHub app;
 		// paste is always available (-key, or when no app is configured).
 		clientID := githubClientID
@@ -192,4 +214,38 @@ func storeProviderKey(cfg config.Config, prompt, which string) error {
 	}
 	fmt.Fprintln(os.Stderr, "stored server-side; new boxes get it automatically")
 	return nil
+}
+
+// whoami reports the account a stored key belongs to, and whether it still
+// works at all.
+//
+// Deliberately quiet about WHY it failed. A network blip and a revoked key both
+// come back false, and both lead to the same place — the sign-in flow — so
+// distinguishing them here would only add a message before an identical
+// outcome. The one case that must not happen is being told "already signed in"
+// while holding a key the server has revoked.
+func whoami(cfg config.Config) (string, bool) {
+	key := cfg.APIKeyResolved()
+	base := cfg.BaseURLResolved()
+	if key == "" {
+		return "", false
+	}
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	cl := &api.Client{BaseURL: base, Key: key}
+
+	// Bounded, because this runs BEFORE the sign-in a person asked for. A
+	// gateway that hangs must cost a few seconds and then let them sign in, not
+	// block the command they typed.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	who, err := cl.Whoami(ctx)
+	if err != nil {
+		return "", false
+	}
+	if who.Login != "" {
+		return who.Login, true
+	}
+	return who.TenantID, true
 }
