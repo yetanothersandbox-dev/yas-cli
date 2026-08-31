@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -324,7 +325,31 @@ type SignupResult struct {
 func (c *Client) Signup(ctx context.Context, githubToken, refreshToken string, expiresIn int64) (SignupResult, error) {
 	return c.signupBody(ctx, map[string]any{
 		"githubToken": githubToken, "refreshToken": refreshToken, "expiresIn": expiresIn,
+		// The machine that will hold the key, so a listing can tell two of them
+		// apart. Every key used to be called `signup:<login>`, which named the
+		// one thing they all share.
+		"device": DeviceName(),
 	})
+}
+
+// DeviceName is what this machine should call a key it is about to be given.
+//
+// The hostname, because it is the thing somebody reads in `yas keys` and asks
+// "is that the laptop I still have?". Best effort by design: a machine that
+// cannot name itself sends nothing and the server falls back, which is exactly
+// the old behaviour rather than a failed sign-in.
+func DeviceName() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	// The short name. macOS reports "tom-laptop.local" and a corporate DNS
+	// suffix can be longer than the label itself; neither adds anything to the
+	// question being asked.
+	if i := strings.Index(h, "."); i > 0 {
+		h = h[:i]
+	}
+	return strings.TrimSpace(h)
 }
 
 func (c *Client) signupBody(ctx context.Context, body map[string]any) (SignupResult, error) {
@@ -371,7 +396,7 @@ func (c *Client) signupBody(ctx context.Context, body map[string]any) (SignupRes
 // the authorization code and the gateway does the exchange — the client
 // secret never travels.
 func (c *Client) SignupCode(ctx context.Context, code string) (SignupResult, error) {
-	return c.signupBody(ctx, map[string]any{"code": code})
+	return c.signupBody(ctx, map[string]any{"code": code, "device": DeviceName()})
 }
 
 // Whoami is GET /v1/user: the account, and which credentials the gateway
