@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/charmbracelet/lipgloss"
+	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -149,8 +151,6 @@ func poolLine(p *api.Pool) string {
 		return bar + ui.S(ui.Subtle).Render(fmt.Sprintf("pool unbounded · %d running · %d parked",
 			p.Boxes.Running, p.Boxes.Suspended))
 	}
-	used := float64(p.MemMiB.Used) / 1024
-	lim := float64(p.MemMiB.Limit) / 1024
 	c := ui.Subtle
 	switch frac := float64(p.MemMiB.Used) / float64(p.MemMiB.Limit); {
 	case frac >= 1:
@@ -158,9 +158,23 @@ func poolLine(p *api.Pool) string {
 	case frac >= 0.8:
 		c = ui.Warn
 	}
-	return bar + ui.S(c).Render(fmt.Sprintf("pool %.1f/%.0f GiB", used, lim)) +
+	return bar + ui.S(c).Render(fmt.Sprintf("pool %s/%s GiB", gib(p.MemMiB.Used), gib(p.MemMiB.Limit))) +
 		ui.S(ui.Subtle).Render(fmt.Sprintf(" · %d running · %d parked, costing nothing",
 			p.Boxes.Running, p.Boxes.Suspended))
+}
+
+// gib renders MiB as GiB with only the precision the number needs.
+//
+// It replaced a "%.0f", which is fine for the 10 GiB tier it was written
+// against and prints the free tier's half a gigabyte as "0" — so `yas ls` said
+// "pool 0.5/0 GiB", claiming a full pool with no capacity at all. Whole sizes
+// stay whole ("10", not "10.0"); a half shows its half.
+func gib(mib int) string {
+	g := float64(mib) / 1024
+	if g == math.Trunc(g) {
+		return strconv.Itoa(int(g))
+	}
+	return strconv.FormatFloat(g, 'f', 1, 64)
 }
 
 // statusCell is the picker's dot vocabulary, so the two screens agree.
