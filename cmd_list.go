@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/charmbracelet/lipgloss"
-	"math"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -163,19 +161,11 @@ func poolLine(p *api.Pool) string {
 			p.Boxes.Running, p.Boxes.Suspended))
 }
 
-// gib renders MiB as GiB with only the precision the number needs.
-//
-// It replaced a "%.0f", which is fine for the 10 GiB tier it was written
-// against and prints the free tier's half a gigabyte as "0" — so `yas ls` said
-// "pool 0.5/0 GiB", claiming a full pool with no capacity at all. Whole sizes
-// stay whole ("10", not "10.0"); a half shows its half.
-func gib(mib int) string {
-	g := float64(mib) / 1024
-	if g == math.Trunc(g) {
-		return strconv.Itoa(int(g))
-	}
-	return strconv.FormatFloat(g, 'f', 1, 64)
-}
+// gib is ui.GiB, which is where it now lives: the picker's pool bar renders the
+// same quantity and could not reach a function in package main, so it carried
+// its own "%.0f" and its own copy of the bug this fixed. Kept as a name because
+// poolLine and memCell below read better without the package on every call.
+func gib(mib int) string { return ui.GiB(mib) }
 
 // statusCell is the picker's dot vocabulary, so the two screens agree.
 func statusCell(status string) string {

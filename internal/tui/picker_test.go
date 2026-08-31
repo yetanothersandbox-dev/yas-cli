@@ -183,6 +183,56 @@ func TestPoolBarIsExactlyItsWidth(t *testing.T) {
 	}
 }
 
+// A pool smaller than a gigabyte is described in the size it actually is.
+//
+// The legend rendered its limit with "%.0f", so the free tier's half a gigabyte
+// came out as "0" and the line read "0.5 of 0 GiB · 0 free" — a full pool with
+// no capacity, sitting directly above a bar that had drawn the same numbers
+// correctly. poolLine had the identical bug and was fixed on its own; this is
+// the same fix, through the same ui.GiB, so the two screens cannot drift.
+func TestPoolLegendOnASubGigabytePool(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		limit, used       int
+		wantIn, wantNotIn []string
+	}{
+		{
+			name:  "the free tier's half a gigabyte",
+			limit: 512, used: 512,
+			wantIn:    []string{"0.5 of 0.5 GiB"},
+			wantNotIn: []string{"of 0 GiB"},
+		},
+		{
+			name:  "a whole number stays whole",
+			limit: 32768, used: 12288,
+			wantIn:    []string{"12 of 32 GiB", "20 free"},
+			wantNotIn: []string{"12.0", "32.0"},
+		},
+		{
+			name:  "a fraction shows its fraction",
+			limit: 10240, used: 1536,
+			wantIn: []string{"1.5 of 10 GiB", "8.5 free"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &api.Pool{}
+			p.MemMiB.Limit, p.MemMiB.Used = tc.limit, tc.used
+			p.Boxes.Running = 1
+			_, legend := PoolBar(p, []poolSeg{{"a", tc.used}}, 60)
+			for _, w := range tc.wantIn {
+				if !strings.Contains(legend, w) {
+					t.Errorf("legend %q is missing %q", legend, w)
+				}
+			}
+			for _, w := range tc.wantNotIn {
+				if strings.Contains(legend, w) {
+					t.Errorf("legend %q still contains %q", legend, w)
+				}
+			}
+		})
+	}
+}
+
 // The filter narrows the list and never hides the offer: filtering to a name
 // that does not exist yet is the exact moment somebody wants a new box.
 func TestFilterKeepsTheNewBoxRow(t *testing.T) {

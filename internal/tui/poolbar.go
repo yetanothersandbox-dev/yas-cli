@@ -94,7 +94,6 @@ func PoolBar(p *api.Pool, segs []poolSeg, width int) (bar, legend string) {
 		b.WriteString(lineStyle.Render(strings.Repeat(ui.Dashed, free)))
 	}
 
-	freeGiB := float64(p.MemMiB.Limit-p.MemMiB.Used) / 1024
 	usedC := subtle
 	switch frac := float64(p.MemMiB.Used) / float64(p.MemMiB.Limit); {
 	case frac >= 1:
@@ -102,9 +101,15 @@ func PoolBar(p *api.Pool, segs []poolSeg, width int) (bar, legend string) {
 	case frac >= 0.8:
 		usedC = ui.Warn
 	}
+	// ui.GiB, not a "%.0f". The free tier's pool is half a gigabyte, which a
+	// zero-decimal format renders as "0" — so this line said "0.5 of 0 GiB"
+	// above a bar that was drawn perfectly correctly, which reads as the bar
+	// being the thing that is wrong. Same function as poolLine's, so the two
+	// screens cannot disagree about a number they both show.
 	legend = lipgloss.NewStyle().Foreground(usedC).Render(
-		fmt.Sprintf("%.1f of %.0f GiB", float64(p.MemMiB.Used)/1024, float64(p.MemMiB.Limit)/1024))
-	legend += dimStyle.Render(fmt.Sprintf(" · %.1f free · %d running", freeGiB, p.Boxes.Running))
+		fmt.Sprintf("%s of %s GiB", ui.GiB(p.MemMiB.Used), ui.GiB(p.MemMiB.Limit)))
+	legend += dimStyle.Render(fmt.Sprintf(" · %s free · %d running",
+		ui.GiB(p.MemMiB.Limit-p.MemMiB.Used), p.Boxes.Running))
 	if p.Boxes.Suspended > 0 {
 		legend += dimStyle.Render(fmt.Sprintf(" · %d parked, costing nothing", p.Boxes.Suspended))
 	}

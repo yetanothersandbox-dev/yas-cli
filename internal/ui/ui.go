@@ -19,7 +19,9 @@
 package ui
 
 import (
+	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -162,6 +164,29 @@ func Mark(r *lipgloss.Renderer) [3]string {
 		edge.Render(markMidL) + cur.Render(Cursor) + " " + rest.Render("▁") + edge.Render(markMidR),
 		edge.Render(markBot),
 	}
+}
+
+// GiB renders MiB as GiB with only the precision the number needs.
+//
+// It replaced a "%.0f", which is fine for the 10 GiB tier it was written
+// against and prints the free tier's half a gigabyte as "0" — so `yas ls` said
+// "pool 0.5/0 GiB", claiming a full pool with no capacity at all. Whole sizes
+// stay whole ("10", not "10.0"); a half shows its half.
+//
+// # Why it lives here and not beside `yas list`
+//
+// Because the picker draws the same number. It landed in package main against
+// poolLine, and the pool bar in internal/tui — which cannot reach package main
+// — carried the identical "%.0f" and so carried the identical bug: a free
+// tenant's picker said "0.5 of 0 GiB" above a bar that was correctly drawn.
+// Two screens rendering one quantity need one function, for the same reason
+// they need one palette.
+func GiB(mib int) string {
+	g := float64(mib) / 1024
+	if g == math.Trunc(g) {
+		return strconv.Itoa(int(g))
+	}
+	return strconv.FormatFloat(g, 'f', 1, 64)
 }
 
 // Eyebrow is the site's kicker: mono, uppercase, letter-spaced, in the accent.

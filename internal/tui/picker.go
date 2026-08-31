@@ -182,8 +182,7 @@ func memCell(b boxItem) string {
 	case b.memMiB <= 0:
 		return faintStyle.Render("—")
 	default:
-		return dimStyle.Render(fmt.Sprintf("%.1f / %.1f GiB",
-			float64(b.memUsed)/1024, float64(b.memMiB)/1024))
+		return dimStyle.Render(fmt.Sprintf("%s / %s GiB", ui.GiB(b.memUsed), ui.GiB(b.memMiB)))
 	}
 }
 
@@ -658,8 +657,7 @@ func (m pickerModel) detail() string {
 	switch {
 	case live(b.status) && b.memMiB > 0:
 		s.WriteString(gauge(b.memUsed, b.memMiB, inner) + "\n")
-		s.WriteString(dimStyle.Render(fmt.Sprintf("%.1f of %.1f GiB in use",
-			float64(b.memUsed)/1024, float64(b.memMiB)/1024)) + "\n")
+		s.WriteString(dimStyle.Render(fmt.Sprintf("%s of %s GiB in use", ui.GiB(b.memUsed), ui.GiB(b.memMiB))) + "\n")
 	case b.status == "suspended":
 		s.WriteString(lineStyle.Render(strings.Repeat(ui.Dashed, inner)) + "\n")
 		s.WriteString(dimStyle.Render("drawing nothing from the pool") + "\n")
