@@ -84,11 +84,50 @@ func ErrorKind(err error) string {
 	return ""
 }
 
+// DefaultRequestTimeout bounds an ordinary call. It is applied to the CONTEXT
+// rather than to http.Client.Timeout, because a client-wide timeout is a
+// ceiling no caller can raise: it caps the whole exchange including the body
+// read, so it silently cut off the two calls that are supposed to take
+// minutes.
+//
+// Resume is one (see ResumeTimeout). Exec is the other, and it was the worse
+// of the two: the gateway marks POST /exec HostMayBlock precisely so a
+// ten-minute build works, and the CLI was killing it at sixty seconds from the
+// other end.
+const DefaultRequestTimeout = 60 * time.Second
+
+// ResumeTimeout bounds a resume, which is not an ordinary call.
+//
+// A suspension that has passed its local grace is hibernated: the host frees
+// the local images and the copy in the bucket becomes the only one. Resuming
+// it then means pulling the whole thing back — a 16 GiB rootfs plus the memory
+// image — before the host writes a single byte of response. That is minutes on
+// a big box, and sixty seconds was not close.
+//
+// Still finite. A resume that has not finished in this long is not slow, it is
+// broken, and the caller should be told so rather than left holding a socket.
+const ResumeTimeout = 15 * time.Minute
+
+// ExecTimeout is the backstop on a followed exec. It is not a policy on how
+// long a command may run — the gateway does not bound exec at all — only a
+// refusal to hold a socket open for ever against a host that has died quietly.
+const ExecTimeout = 24 * time.Hour
+
 func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 60 * time.Second}
+	// No Timeout here on purpose — see DefaultRequestTimeout.
+	return &http.Client{}
+}
+
+// bound applies a default deadline to a context that carries none, so a caller
+// that wants longer only has to ask for longer.
+func bound(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 func (c *Client) sleep(d time.Duration) {
@@ -114,6 +153,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// cancelOnClose ties a request's deadline to the life of its body, so a caller
+// that is still streaming keeps its context until it closes.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
 // raw runs one request and returns the response with a 2xx status; anything
 // else is decoded into the shared error taxonomy and the body is closed.
 func (c *Client) raw(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -125,6 +177,17 @@ func (c *Client) raw(ctx context.Context, method, path string, body any) (*http.
 		}
 		rdr = bytes.NewReader(b)
 	}
+	// The deadline has to outlive this function on the success path: raw hands
+	// back a response whose body the caller is still reading, and a follow
+	// stream reads for minutes. Cancelling here closed the body the instant it
+	// was returned. It is released when the body is closed instead.
+	ctx, cancel := bound(ctx, DefaultRequestTimeout)
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			cancel()
+		}
+	}()
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, rdr)
 	if err != nil {
 		return nil, err
@@ -138,6 +201,8 @@ func (c *Client) raw(ctx context.Context, method, path string, body any) (*http.
 		return nil, err
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		handedOver = true
 		return resp, nil
 	}
 	defer resp.Body.Close()
@@ -282,6 +347,10 @@ func (c *Client) Suspend(ctx context.Context, id string) error {
 }
 
 func (c *Client) Resume(ctx context.Context, id string) error {
+	// A hibernated box is pulled back from the bucket before the host answers,
+	// so this one call gets minutes rather than the ordinary sixty seconds.
+	ctx, cancel := bound(ctx, ResumeTimeout)
+	defer cancel()
 	return c.do(ctx, http.MethodPost, "/v1/sandboxes/"+id+"/resume", map[string]any{}, nil)
 }
 
@@ -305,6 +374,18 @@ func (c *Client) Events(ctx context.Context, id string, after int64) (EventsPage
 // the frame with Terminal=true; a drop before that is NOT the command dying —
 // the caller resumes with Events from the last cursor it saw.
 func (c *Client) ExecFollow(ctx context.Context, id string, req ExecRequest, onPage func(EventsPage)) error {
+	// The gateway marks POST /exec HostMayBlock precisely so a ten-minute build
+	// is allowed to take ten minutes. The CLI used to impose sixty seconds from
+	// its end via http.Client.Timeout — which covers the body read and not just
+	// the headers — so `yas exec` silently cut off the commands it exists to
+	// run.
+	//
+	// A long backstop rather than none: the caller's cancellation still
+	// propagates (ctrl-C must keep working, which is why this does not use
+	// context.WithoutCancel), and a stream that has produced nothing for a day
+	// is not a slow build.
+	ctx, cancel := bound(ctx, ExecTimeout)
+	defer cancel()
 	resp, err := c.raw(ctx, http.MethodPost, "/v1/sandboxes/"+id+"/exec?follow=1", req)
 	if err != nil {
 		return err
