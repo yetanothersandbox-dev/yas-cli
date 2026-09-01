@@ -156,9 +156,28 @@ func poolLine(p *api.Pool) string {
 	case frac >= 0.8:
 		c = ui.Warn
 	}
-	return bar + ui.S(c).Render(fmt.Sprintf("pool %s/%s GiB", gib(p.MemMiB.Used), gib(p.MemMiB.Limit))) +
-		ui.S(ui.Subtle).Render(fmt.Sprintf(" · %d running · %d parked, costing nothing",
-			p.Boxes.Running, p.Boxes.Suspended))
+	line := bar + ui.S(c).Render(fmt.Sprintf("pool %s/%s GiB", gib(p.MemMiB.Used), gib(p.MemMiB.Limit))) +
+		ui.S(ui.Subtle).Render(fmt.Sprintf(" · %d running · %d parked", p.Boxes.Running, p.Boxes.Suspended))
+
+	// Disk, but only when there is a ceiling to be near.
+	//
+	// It used to say parked boxes cost "nothing", which was true of the POOL and
+	// false of the disk — a parked box is precisely what fills the disk
+	// allowance, and being refused a create over a number nobody could see was
+	// the whole problem. Shown when it is worth knowing about rather than always:
+	// a line that reports every dimension on every list is one nobody reads.
+	if p.DiskMiB.Limit > 0 {
+		dc := ui.Subtle
+		switch frac := float64(p.DiskMiB.Used) / float64(p.DiskMiB.Limit); {
+		case frac >= 1:
+			dc = ui.Danger
+		case frac >= 0.8:
+			dc = ui.Warn
+		}
+		line += ui.S(dc).Render(fmt.Sprintf(" · disk %s/%s GiB",
+			gib(p.DiskMiB.Used), gib(p.DiskMiB.Limit)))
+	}
+	return line
 }
 
 // gib is ui.GiB, which is where it now lives: the picker's pool bar renders the

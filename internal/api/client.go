@@ -220,6 +220,13 @@ type Pool struct {
 		Limit int `json:"limit"`
 		Used  int `json:"used"`
 	} `json:"milliVcpu"`
+	// DiskMiB is stored bytes: suspension images, plus rootfs grown past the
+	// template. Its Used goes UP when a box is parked, unlike the two above.
+	DiskMiB struct {
+		Limit int `json:"limit"`
+		Used  int `json:"used"`
+		Free  int `json:"free"`
+	} `json:"diskMib"`
 	Boxes struct {
 		Running   int `json:"running"`
 		Suspended int `json:"suspended"`
