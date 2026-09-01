@@ -34,11 +34,17 @@ type Result struct {
 // CreateOpts is the form's output; zero fields mean "the config default".
 type CreateOpts struct {
 	Name string
+	// MemMiB and MilliVcpu are what the form's size rows resolved to. They are
+	// always set — the rows start on this account's own default rather than on
+	// "unset" — so the caller sends a size it can name rather than one it hopes
+	// the server will pick.
+	MemMiB    int
+	MilliVcpu int
 	// Egress is the egress preset ("" = proxy); Allow is the filtered
 	// mode's comma-separated name list.
 	//
-	// No size and no idle ttl. Size lives in `yas defaults` and the flags on
-	// `yas new`; idle ttl is not the tenant's to set at all.
+	// No idle ttl: it is not the tenant's to set. No disk either — the form has
+	// no honest default to show for it, and `yas new -disk` still does.
 	Egress string
 	Allow  string
 }

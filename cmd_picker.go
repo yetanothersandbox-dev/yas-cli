@@ -62,9 +62,20 @@ func pickOnce(cl *api.Client, cfg config.Config, title string) (string, error) {
 		// The create loop: a refused name returns to the form with the
 		// refusal shown and everything else kept, rather than ending the
 		// program with the user's input on the floor.
+		// Asked once, before the form opens, so the size rows can show this
+		// account's real numbers instead of the word "default". A failure here
+		// is not fatal: the form falls back to an unmarked ladder, which is the
+		// old behaviour and still makes a box.
+		var defs tui.Defaults
+		if d, derr := cl.BoxDefaults(context.Background()); derr == nil {
+			defs = tui.Defaults{
+				MemMiB: d.EffectiveMemMiB, MilliVcpu: d.EffectiveMilliVcpu,
+				MaxMemMiB: d.MaxMemMiB, MaxMilliVcpu: d.MaxMilliVcpu,
+			}
+		}
 		suggestion, note := names.Generate(), ""
 		for {
-			opts, ok, err := tui.RunCreateForm(suggestion, note)
+			opts, ok, err := tui.RunCreateForm(suggestion, note, defs)
 			if err != nil {
 				return "", err
 			}
@@ -77,10 +88,9 @@ func pickOnce(cl *api.Client, cfg config.Config, title string) (string, error) {
 				note = perr.Error()
 				continue
 			}
-			// No size here: createBox fills it from the tenant's defaults, which
-			// is where a size the user chose once already lives.
 			id, err := createBox(context.Background(), cl, cfg, createOpts{
-				Name: opts.Name, Policy: pol,
+				Name: opts.Name, MemMiB: opts.MemMiB, MilliVcpu: opts.MilliVcpu,
+				Policy: pol,
 			})
 			if err == nil {
 				return id, nil
