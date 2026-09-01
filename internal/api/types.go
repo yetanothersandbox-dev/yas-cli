@@ -23,7 +23,11 @@ type CreateRequest struct {
 	MilliVcpu      int `json:"milliVcpu,omitempty"`
 	DiskMiB        int `json:"diskMib,omitempty"`
 	MaxLifetimeSec int `json:"maxLifetimeSec,omitempty"`
-	IdleTtlSec     int `json:"idleTtlSec,omitempty"`
+	// No IdleTtlSec. The idle timeout is not a tenant setting: it is 600s on
+	// every tier, it is the ceiling as well as the default, and a create asking
+	// for longer was already refused. Offering a field that can only be set to
+	// what it already is, or to something worse for the person setting it, is a
+	// question with no good answer.
 	// SSHKeys are public halves only; the create installs them before the 202,
 	// so create-then-connect does not race.
 	SSHKeys []string `json:"sshKeys,omitempty"`

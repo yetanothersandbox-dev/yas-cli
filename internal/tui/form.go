@@ -25,12 +25,19 @@ var (
 // shown as a warning — it is how a refused create (name taken) comes BACK to
 // the form instead of ending the program with the user's input on the floor.
 func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
+	// Three rows, not seven.
+	//
+	// The four that went were name-your-own-size and idle ttl, and every one of
+	// them rendered as "server default" — a form where most rows say "leave this
+	// alone" is asking a question it does not want an answer to. Size has a
+	// place to live already: `yas defaults` sets it once for every box, and
+	// `yas new -mem/-cpus/-disk` overrides it for one. Idle ttl has no place to
+	// live, because it is not the tenant's to choose.
+	//
+	// What is left is what somebody actually decides when making a box: what to
+	// call it, and what it may reach.
 	fields := []struct{ label, placeholder string }{
 		{"name", suggestedName},
-		{"memory", "server default (MiB)"},
-		{"vcpus", "server default (0.5 ok)"},
-		{"disk", "server default (MiB)"},
-		{"idle ttl", "server default (sec)"},
 		{"egress", "sealed · filtered · open"},
 		{"allow", "filtered only: github.com,pypi.org"},
 	}
@@ -66,13 +73,9 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 		name = suggestedName
 	}
 	return CreateOpts{
-		Name:       name,
-		MemMiB:     atoiOrZero(fm.inputs[1].Value()),
-		Vcpus:      strings.TrimSpace(fm.inputs[2].Value()),
-		DiskMiB:    atoiOrZero(fm.inputs[3].Value()),
-		IdleTtlSec: atoiOrZero(fm.inputs[4].Value()),
-		Egress:     strings.TrimSpace(fm.inputs[5].Value()),
-		Allow:      strings.TrimSpace(fm.inputs[6].Value()),
+		Name:   name,
+		Egress: strings.TrimSpace(fm.inputs[1].Value()),
+		Allow:  strings.TrimSpace(fm.inputs[2].Value()),
 	}, true, nil
 }
 

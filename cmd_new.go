@@ -27,7 +27,6 @@ func cmdNew(args []string) error {
 	mem := fs.Int("mem", 0, "memory MiB")
 	cpus := fs.String("cpus", "", "vCPUs; fractions allowed, e.g. 0.5 or 2")
 	disk := fs.Int("disk", 0, "disk MiB")
-	ttl := fs.Int("ttl", 0, "idle TTL seconds before the box is reaped")
 	lifetime := fs.Int("lifetime", 0, "max lifetime seconds")
 	noConnect := fs.Bool("no-connect", false, "create only; do not open a shell")
 	preset := fs.String("preset", "", "privacy preset: sealed (default: proxy egress + credentials), filtered (routed to -allow names, NO credentials), open (routed anywhere, NO credentials)")
@@ -66,7 +65,7 @@ func cmdNew(args []string) error {
 	}
 	id, err := createBox(context.Background(), cl, cfg, createOpts{
 		Name: boxName, MemMiB: *mem, MilliVcpu: milliVcpu, DiskMiB: *disk,
-		IdleTtlSec: *ttl, MaxLifetimeSec: *lifetime, Policy: pol,
+		MaxLifetimeSec: *lifetime, Policy: pol,
 		Profile: *profile,
 	})
 	if err != nil {
@@ -111,7 +110,6 @@ type createOpts struct {
 	// API sells in. parseVcpus turns what a human types ("0.5", "2") into it.
 	MilliVcpu      int
 	DiskMiB        int
-	IdleTtlSec     int
 	MaxLifetimeSec int
 	Policy         *api.Policy
 	// Profile names a saved profile the gateway expands at the edge. Anything
@@ -242,7 +240,6 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		MemMiB:         firstNonZero(o.MemMiB, cfg.Defaults.MemMiB),
 		MilliVcpu:      firstNonZero(o.MilliVcpu, cfg.Defaults.MilliVcpu, cfg.Defaults.VcpuCount*1000),
 		DiskMiB:        firstNonZero(o.DiskMiB, cfg.Defaults.DiskMiB),
-		IdleTtlSec:     firstNonZero(o.IdleTtlSec, cfg.Defaults.IdleTtlSec),
 		MaxLifetimeSec: firstNonZero(o.MaxLifetimeSec, cfg.Defaults.MaxLifetimeSec),
 		SSHKeys:        keys,
 		// Host-side proxy config, never guest-visible. Sending an empty

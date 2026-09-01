@@ -23,7 +23,6 @@ type Defaults struct {
 	VcpuCount      int `json:"vcpuCount,omitempty"`
 	MilliVcpu      int `json:"milliVcpu,omitempty"`
 	DiskMiB        int `json:"diskMib,omitempty"`
-	IdleTtlSec     int `json:"idleTtlSec,omitempty"`
 	MaxLifetimeSec int `json:"maxLifetimeSec,omitempty"`
 }
 

@@ -33,15 +33,12 @@ type Result struct {
 
 // CreateOpts is the form's output; zero fields mean "the config default".
 type CreateOpts struct {
-	Name   string
-	MemMiB int
-	// Vcpus is what the human typed, verbatim ("2", "0.5", ""); the caller
-	// parses it into milli-vCPU so the form does not own unit arithmetic.
-	Vcpus      string
-	DiskMiB    int
-	IdleTtlSec int
+	Name string
 	// Egress is the privacy preset ("" = sealed); Allow is the filtered
 	// mode's comma-separated name list.
+	//
+	// No size and no idle ttl. Size lives in `yas defaults` and the flags on
+	// `yas new`; idle ttl is not the tenant's to set at all.
 	Egress string
 	Allow  string
 }
