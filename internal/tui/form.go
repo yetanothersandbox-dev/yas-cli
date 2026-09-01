@@ -38,7 +38,7 @@ func RunCreateForm(suggestedName, note string) (CreateOpts, bool, error) {
 	// call it, and what it may reach.
 	fields := []struct{ label, placeholder string }{
 		{"name", suggestedName},
-		{"egress", "sealed · filtered · open"},
+		{"egress", "proxy · filtered · open"},
 		{"allow", "filtered only: github.com,pypi.org"},
 	}
 	inputs := make([]textinput.Model, len(fields))

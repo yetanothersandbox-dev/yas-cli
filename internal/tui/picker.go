@@ -34,7 +34,7 @@ type Result struct {
 // CreateOpts is the form's output; zero fields mean "the config default".
 type CreateOpts struct {
 	Name string
-	// Egress is the privacy preset ("" = sealed); Allow is the filtered
+	// Egress is the egress preset ("" = proxy); Allow is the filtered
 	// mode's comma-separated name list.
 	//
 	// No size and no idle ttl. Size lives in `yas defaults` and the flags on

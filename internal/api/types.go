@@ -35,8 +35,9 @@ type CreateRequest struct {
 	AnthropicKey string `json:"anthropicKey,omitempty"`
 	GitHubToken  string `json:"githubToken,omitempty"`
 	OpenAIKey    string `json:"openaiKey,omitempty"`
-	// Policy is the box's privacy posture. Absent = sealed (proxy egress,
-	// credentials attached) — exactly what every create was before policies.
+	// Policy is the box's egress posture. Absent = proxy mode (no route off the
+	// link, everything through the credential proxy) — exactly what every create
+	// was before policies. Credentials go through the proxy in every mode.
 	Policy *Policy `json:"policy,omitempty"`
 	// Profile names a saved profile the GATEWAY expands, at the edge, into the
 	// fields above before the body reaches a host. It never travels further: a
@@ -48,14 +49,27 @@ type CreateRequest struct {
 
 // Policy mirrors the server's SandboxPolicy.
 type Policy struct {
+	// Version is omitted — meaning 1 — unless the policy uses grammar that only
+	// version 2 defines. That omission is what keeps an unchanged command line
+	// producing an unchanged fence on an upgraded CLI: under version 1 a bare
+	// allow entry still covers the name and everything under it.
+	Version     int               `json:"version,omitempty"`
 	Egress      *EgressPolicy     `json:"egress,omitempty"`
 	Credentials *CredentialPolicy `json:"credentials,omitempty"`
 }
 
 type EgressPolicy struct {
-	Mode    string         `json:"mode,omitempty"` // proxy | filtered | open
-	Allow   []string       `json:"allow,omitempty"`
-	Connect []ConnectEntry `json:"connect,omitempty"`
+	Mode string `json:"mode,omitempty"` // proxy | filtered | open
+	// Allow is a suffix list under version 1. Under version 2 a bare entry is
+	// EXACT, "*.host" is every name under it, and either may carry ":443".
+	Allow []string `json:"allow,omitempty"`
+	// Deny, AllowNets and DenyNets need version 2. Deny and DenyNets beat every
+	// allow and apply to filtered and open; AllowNets grants addresses with no
+	// DNS involved and is filtered-only.
+	Deny      []string       `json:"deny,omitempty"`
+	AllowNets []string       `json:"allowNets,omitempty"`
+	DenyNets  []string       `json:"denyNets,omitempty"`
+	Connect   []ConnectEntry `json:"connect,omitempty"`
 }
 
 type ConnectEntry struct {

@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 // parseVcpus is the CLI's only unit arithmetic: it turns the human spelling
 // into the milli-vCPU the API sells in. A wrong conversion here is a box a
@@ -42,5 +44,26 @@ func TestParseVcpus(t *testing.T) {
 				t.Fatalf("parseVcpus(%q) = %d milli, want %d", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// The lists reach the wire whole. A flag the CLI accepts and then drops is a
+// posture the user was told they had.
+func TestBuildPolicyCarriesEveryList(t *testing.T) {
+	p, err := buildPolicy(policyFlags{
+		preset: "filtered", allow: "github.com, *.github.com ,", deny: "gist.github.com",
+		allowNets: "203.0.113.0/24:443", denyNets: "203.0.113.66",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := p.Egress
+	// The trailing comma is dropped rather than sent as an empty rule the
+	// server then has to refuse.
+	if len(e.Allow) != 2 || e.Allow[0] != "github.com" || e.Allow[1] != "*.github.com" {
+		t.Fatalf("allow = %v", e.Allow)
+	}
+	if len(e.Deny) != 1 || len(e.AllowNets) != 1 || len(e.DenyNets) != 1 {
+		t.Fatalf("egress = %+v", e)
 	}
 }

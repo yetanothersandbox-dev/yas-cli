@@ -29,9 +29,12 @@ func cmdNew(args []string) error {
 	disk := fs.Int("disk", 0, "disk MiB")
 	lifetime := fs.Int("lifetime", 0, "max lifetime seconds")
 	noConnect := fs.Bool("no-connect", false, "create only; do not open a shell")
-	preset := fs.String("preset", "", "privacy preset: sealed (default: proxy egress + credentials), filtered (routed to -allow names, NO credentials), open (routed anywhere, NO credentials)")
-	allow := fs.String("allow", "", "comma-separated DNS suffixes a filtered box may reach (e.g. github.com,pypi.org)")
-	connect := fs.String("connect", "", "comma-separated CONNECT tunnel targets for a sealed box (host or host:port, e.g. ssh.github.com:22)")
+	preset := fs.String("preset", "", "egress preset: proxy (default: no route; Claude, Codex and GitHub via the fleet proxy), filtered (routed to what -allow names), open (routed anywhere)")
+	allow := fs.String("allow", "", "comma-separated names a filtered box may reach. A bare name is exact; write *.github.com for subdomains, or pypi.org:443 for one port")
+	deny := fs.String("deny", "", "comma-separated names this box may never resolve. Beats every allow (e.g. gist.github.com,*.gist.github.com)")
+	allowNet := fs.String("allow-net", "", "comma-separated CIDRs a filtered box may reach with no DNS involved (e.g. 203.0.113.0/24:443)")
+	denyNet := fs.String("deny-net", "", "comma-separated CIDRs this box may never reach. Beats every allow")
+	connect := fs.String("connect", "", "comma-separated CONNECT tunnel targets for a proxy-mode box (host or host:port, e.g. ssh.github.com:22)")
 	noCreds := fs.Bool("no-creds", false, "attach no credentials to this box, whatever is stored")
 	profile := fs.String("profile", "", "create from a saved profile: its posture, size and repo, unless a flag here overrides them")
 	if err := fs.Parse(args); err != nil {
@@ -48,7 +51,11 @@ func cmdNew(args []string) error {
 		return err
 	}
 
-	pol, err := buildPolicy(*preset, *allow, *connect, *noCreds)
+	pol, err := buildPolicy(policyFlags{
+		preset: *preset, allow: *allow, deny: *deny,
+		allowNets: *allowNet, denyNets: *denyNet,
+		connect: *connect, noCreds: *noCreds,
+	})
 	if err != nil {
 		return err
 	}
@@ -56,7 +63,7 @@ func cmdNew(args []string) error {
 	// whose privacy nobody chose. The server would take the caller's explicit
 	// policy and drop the profile's silently; refusing here says so instead.
 	if *profile != "" && pol != nil {
-		return fmt.Errorf("-profile and -preset/-allow/-connect/-no-creds set the same thing; use one")
+		return fmt.Errorf("-profile and the posture flags set the same thing; use one")
 	}
 
 	cfg, cl, err := loadClient()
@@ -156,28 +163,55 @@ func parseVcpus(s string) (int, error) {
 	return milli, nil
 }
 
-// buildPolicy turns the preset and flags into the wire policy. Nil means
-// sealed — no policy object at all, byte-identical to a pre-policy create.
-func buildPolicy(preset, allow, connect string, noCreds bool) (*api.Policy, error) {
-	mode := ""
-	switch preset {
-	case "", "sealed":
-	case "filtered", "open":
-		mode = preset
-	default:
-		return nil, fmt.Errorf("unknown preset %q: sealed, filtered or open", preset)
-	}
-	var allowList []string
-	if allow != "" {
-		for _, a := range strings.Split(allow, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				allowList = append(allowList, a)
-			}
+// policyFlags is every posture flag `yas new` carries, gathered so the picker
+// and the command build a policy the same way rather than through two argument
+// lists that drift.
+type policyFlags struct {
+	preset    string
+	allow     string
+	deny      string
+	allowNets string
+	denyNets  string
+	connect   string
+	noCreds   bool
+}
+
+// splitList reads one comma-separated flag. Empty entries are dropped, so a
+// trailing comma is a typo rather than an empty rule the server has to refuse.
+func splitList(s string) []string {
+	var out []string
+	for _, e := range strings.Split(s, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
 		}
 	}
+	return out
+}
+
+// buildPolicy turns the preset and flags into the wire policy. Nil means proxy
+// mode with no tweaks — no policy object at all, byte-identical to a pre-policy
+// create.
+//
+// "sealed" is the old name for the proxy preset and stays accepted forever.
+// It is in scripts, in shell history and in every doc written before the
+// rename; refusing it would break those to no purpose, and it means exactly
+// what "proxy" means.
+func buildPolicy(f policyFlags) (*api.Policy, error) {
+	mode := ""
+	switch f.preset {
+	case "", "proxy", "sealed":
+	case "filtered", "open":
+		mode = f.preset
+	default:
+		return nil, fmt.Errorf("unknown preset %q: proxy, filtered or open", f.preset)
+	}
+	allowList := splitList(f.allow)
+	denyList := splitList(f.deny)
+	allowNets := splitList(f.allowNets)
+	denyNets := splitList(f.denyNets)
 	var connects []api.ConnectEntry
-	if connect != "" {
-		for _, c := range strings.Split(connect, ",") {
+	if f.connect != "" {
+		for _, c := range strings.Split(f.connect, ",") {
 			c = strings.TrimSpace(c)
 			if c == "" {
 				continue
@@ -194,24 +228,33 @@ func buildPolicy(preset, allow, connect string, noCreds bool) (*api.Policy, erro
 			connects = append(connects, entry)
 		}
 	}
-	if mode == "filtered" && len(allowList) == 0 {
-		return nil, errors.New("-preset filtered needs -allow: an empty filter is no policy at all")
+	if mode == "filtered" && len(allowList)+len(allowNets) == 0 {
+		return nil, errors.New("-preset filtered needs -allow or -allow-net: an empty filter is no policy at all")
 	}
-	if mode == "" && len(allowList) > 0 {
+	if mode == "" && len(allowList)+len(allowNets) > 0 {
 		return nil, errors.New("-allow only applies to -preset filtered")
 	}
-	if mode == "" && !noCreds && len(connects) == 0 {
-		return nil, nil // plain sealed: send no policy at all
+	if mode == "" && len(denyList)+len(denyNets) > 0 {
+		return nil, errors.New("-deny and -deny-net need a routed preset; a proxy box routes nothing to deny")
 	}
-	p := &api.Policy{Egress: &api.EgressPolicy{Mode: mode, Allow: allowList, Connect: connects}}
-	if mode != "" || noCreds {
-		// Routed presets renounce credentials (the server enforces it; saying
-		// it here keeps the request honest), and -no-creds says so in sealed
-		// mode too.
+	if mode == "" && !f.noCreds && len(connects) == 0 {
+		return nil, nil // plain proxy mode: send no policy at all
+	}
+	p := &api.Policy{Egress: &api.EgressPolicy{
+		Mode: mode, Allow: allowList, Deny: denyList,
+		AllowNets: allowNets, DenyNets: denyNets, Connect: connects,
+	}}
+	if f.noCreds {
+		// -no-creds ONLY. A routed preset used to renounce credentials here too,
+		// mirroring a server-side rule that no longer exists — leaving it would
+		// have made `-preset filtered` keep arriving with credentials dropped,
+		// with no error anywhere to say why the box could not reach Claude.
+		// How far a box may reach and what it may spend are separate questions
+		// now, and this flag is the only thing that answers the second one.
 		p.Credentials = &api.CredentialPolicy{GitHub: "none", Anthropic: "none", OpenAI: "none"}
 	}
 	if mode == "" {
-		p.Egress.Mode = "" // sealed with tweaks: proxy mode is the default
+		p.Egress.Mode = "" // proxy mode with tweaks: proxy is the default
 	}
 	return p, nil
 }

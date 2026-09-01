@@ -71,7 +71,7 @@ func pickOnce(cl *api.Client, cfg config.Config, title string) (string, error) {
 			if !ok {
 				return "", errBackToPicker
 			}
-			pol, perr := buildPolicy(opts.Egress, opts.Allow, "", false)
+			pol, perr := buildPolicy(policyFlags{preset: opts.Egress, allow: opts.Allow})
 			if perr != nil {
 				suggestion = opts.Name
 				note = perr.Error()
