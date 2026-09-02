@@ -18,6 +18,7 @@ import (
 
 	"github.com/Gilbert09/yas/clients/yas/internal/api"
 	"github.com/Gilbert09/yas/clients/yas/internal/config"
+	"github.com/Gilbert09/yas/clients/yas/internal/tui"
 )
 
 // EnsureIdentity returns the private-key path to hand ssh -i, generating the
@@ -139,11 +140,16 @@ func Connect(ctx context.Context, cl *api.Client, cfg config.Config, id string, 
 		return err
 	}
 	if sb.Status == "suspended" {
-		fmt.Fprintf(os.Stderr, "resuming %s...\n", id)
-		if err := cl.Resume(ctx, id); err != nil {
-			return fmt.Errorf("resuming %s: %w", id, err)
-		}
-		if err := waitReady(ctx, cl, id); err != nil {
+		// One spinner across BOTH halves. The resume call and the wait for the
+		// box to serve again are one wait to the person watching, and two
+		// indicators would just blink at them.
+		err := tui.Waiting("resuming "+id, func() error {
+			if err := cl.Resume(ctx, id); err != nil {
+				return fmt.Errorf("resuming %s: %w", id, err)
+			}
+			return waitReady(ctx, cl, id)
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -181,9 +187,18 @@ func Connect(ctx context.Context, cl *api.Client, cfg config.Config, id string, 
 	return cmd.Run()
 }
 
+const (
+	// firstPoll is how soon after the resume returns to look. Small, because
+	// the resume call is synchronous and the answer is usually already yes.
+	firstPoll = 120 * time.Millisecond
+	// maxPoll is where the backoff stops.
+	maxPoll = 2 * time.Second
+)
+
 // waitReady polls until the sandbox serves again after a resume.
 func waitReady(ctx context.Context, cl *api.Client, id string) error {
 	deadline := time.Now().Add(2 * time.Minute)
+	wait := firstPoll
 	for time.Now().Before(deadline) {
 		sb, err := cl.Get(ctx, id)
 		if err != nil {
@@ -198,7 +213,14 @@ func waitReady(ctx context.Context, cl *api.Client, id string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(wait):
+		}
+		// Fast first, then back off. Resume is synchronous, so the status is
+		// usually already there on the first look and the old flat two seconds
+		// was two seconds of nothing added to every wake. Backing off keeps a
+		// genuinely slow resume from turning into a poll flood.
+		if wait *= 2; wait > maxPoll {
+			wait = maxPoll
 		}
 	}
 	return fmt.Errorf("%s did not come back within two minutes", id)
