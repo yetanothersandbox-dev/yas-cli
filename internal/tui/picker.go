@@ -89,6 +89,9 @@ type boxItem struct {
 	vcpu    int
 	milli   int
 	costUSD float64
+	// gone is when this box stops existing: the lifetime wall while it runs,
+	// the retention wall while it is parked. Zero until the detail fetch lands.
+	gone time.Time
 }
 
 func (b boxItem) FilterValue() string { return b.id }
@@ -204,6 +207,59 @@ func compactAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// goneAt is when a box stops existing, whichever clock is the one that applies.
+//
+// A parked box is not counting down its lifetime — it is not running — so
+// showing the lifetime wall for one would name a time nothing happens at. What
+// ends a parked box is retention.
+func goneAt(sb api.Sandbox) time.Time {
+	if parked(sb.Status) {
+		return sb.SuspendExpiresAt
+	}
+	return sb.Deadline
+}
+
+// untilText renders how long is left, and the wall-clock time it runs out.
+//
+// Both, because they answer different questions: "how long have I got" is the
+// one somebody asks at the picker, and "when exactly" is the one they need to
+// decide whether that is before or after something else in their day. The
+// absolute time is local — a box's deadline is only useful in the timezone of
+// the person reading it.
+func untilText(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Until(t)
+	if d <= 0 {
+		return "any moment now"
+	}
+	// Rounded UP, unlike compactAge beside it, and the difference is the
+	// direction of the error. An age that truncates says a box is slightly
+	// younger than it is, which costs nothing. A countdown that truncates says
+	// a box has LESS time than it has — five hours left reading as "4h" — and
+	// the whole point of the row is to be trusted about that.
+	ceil := func(d, unit time.Duration) int { return int((d + unit - 1) / unit) }
+	var left string
+	switch {
+	case d < time.Minute:
+		left = "<1m"
+	case d < time.Hour:
+		left = fmt.Sprintf("%dm", ceil(d, time.Minute))
+	case d < 48*time.Hour:
+		left = fmt.Sprintf("%dh", ceil(d, time.Hour))
+	default:
+		left = fmt.Sprintf("%dd", ceil(d, 24*time.Hour))
+	}
+	return left + " · " + t.Local().Format("2 Jan 15:04")
+}
+
+// soon is when a deadline is close enough to be worth a colour. An hour is the
+// point at which "later" stops being a plan.
+func soon(t time.Time) bool {
+	return !t.IsZero() && time.Until(t) < time.Hour
 }
 
 func vcpuText(b boxItem) string {
@@ -417,6 +473,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.ok {
 				b.status, b.memMiB, b.memUsed = msg.sb.Status, msg.sb.MemMiB, msg.sb.MemUsedMiB
 				b.vcpu, b.milli, b.costUSD = msg.sb.VcpuCount, msg.sb.MilliVcpu, msg.sb.CostUSD
+				b.gone = goneAt(msg.sb)
 			} else {
 				b.status = "?"
 			}
@@ -671,6 +728,21 @@ func (m pickerModel) detail() string {
 		s.WriteString(faintStyle.Render(padRight(k, 7)) + dimStyle.Render(v) + "\n")
 	}
 	field("cpu", vcpuText(b))
+	if v := untilText(b.gone); v != "" {
+		// "gone" for a running box and "kept" for a parked one, because the two
+		// clocks mean different things to the person reading them: one is a box
+		// about to be destroyed, the other a filesystem about to stop being
+		// resumable.
+		k := "gone"
+		if parked(b.status) {
+			k = "kept"
+		}
+		if soon(b.gone) {
+			s.WriteString(faintStyle.Render(padRight(k, 7)) + warnStyle.Render(v) + "\n")
+		} else {
+			field(k, v)
+		}
+	}
 	if b.costUSD > 0 {
 		field("cost", fmt.Sprintf("$%.2f so far", b.costUSD))
 	}

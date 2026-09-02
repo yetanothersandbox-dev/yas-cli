@@ -109,6 +109,13 @@ type Sandbox struct {
 	MilliVcpu int     `json:"milliVcpu"`
 	CostUSD   float64 `json:"costUsd"`
 	Retired   bool    `json:"retired"`
+	// Deadline and SuspendExpiresAt are the two ways a box stops existing, and
+	// only one applies at a time: a running box is destroyed at its lifetime
+	// wall, a parked one when its suspension passes retention. Both are on the
+	// per-id record and NEITHER is on the list, which is why the picker only
+	// knows them once the detail fetch lands.
+	Deadline         time.Time `json:"deadline"`
+	SuspendExpiresAt time.Time `json:"suspendExpiresAt"`
 }
 
 // SSHAccess is the response of POST /v1/sandboxes/{id}/ssh.
