@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -215,10 +216,13 @@ func scheduleAdd(ctx context.Context, args []string) error {
 	if err != nil && !isNew {
 		return err
 	}
+	task := json.RawMessage(nil)
 	if !isNew {
-		if text == "" {
-			text = existing.Prompt()
-		}
+		// The work goes back as the RAW task, not as a prompt dug out of it and
+		// re-wrapped: a task written through the API can carry fields this
+		// client has never heard of — a model, a turn budget — and PUT replaces
+		// the whole row, so a re-wrapped prompt would silently clear the rest.
+		task, text = scheduleTaskPayload(existing.Task, text)
 		if *cron == "" {
 			*cron = existing.Cron
 		}
@@ -238,7 +242,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 	if *cron == "" {
 		return errors.New(`a schedule needs -cron, for example -cron "0 3 * * *" (03:00 every day)`)
 	}
-	if text == "" {
+	if text == "" && len(task) == 0 {
 		return errors.New("a schedule needs a prompt: without one it boots a box every time it fires and the box does nothing")
 	}
 
@@ -248,6 +252,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		Timezone:    *tz,
 		Profile:     *profile,
 		Prompt:      text,
+		Task:        task,
 		Overlap:     *overlap,
 	}
 	// Sent only when this invocation actually said something about it: the
@@ -284,6 +289,43 @@ func scheduleAdd(ctx context.Context, args []string) error {
 }
 
 const scheduleAddUsage = "usage: yas schedule add <name> -cron \"<expression>\" [flags] <prompt...>\n"
+
+// scheduleTaskPayload decides how an edit writes the work back: `task` or
+// `prompt`, never both — the server refuses a body carrying the two.
+//
+// No new prompt round-trips the stored task verbatim. A new prompt replaces
+// only the task's own prompt when the task holds anything else, and takes the
+// shorthand otherwise. Either way, a field this client cannot name survives
+// the edit.
+func scheduleTaskPayload(existing json.RawMessage, text string) (json.RawMessage, string) {
+	if text == "" {
+		return existing, ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(existing, &fields) != nil || len(fields) == 0 {
+		return nil, text
+	}
+	extra := false
+	for k := range fields {
+		if k != "prompt" {
+			extra = true
+			break
+		}
+	}
+	if !extra {
+		return nil, text
+	}
+	enc, err := json.Marshal(text)
+	if err != nil {
+		return nil, text
+	}
+	fields["prompt"] = enc
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, text
+	}
+	return out, ""
+}
 
 func scheduleRemove(ctx context.Context, args []string) error {
 	if len(args) != 1 {

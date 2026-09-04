@@ -149,3 +149,66 @@ func TestSchedulePromptFromRawTask(t *testing.T) {
 		t.Fatalf("prompt = %q, want empty", got)
 	}
 }
+
+// An edit must not clear the parts of the task it cannot name. The stored task
+// can carry fields this client has never heard of, and the server's PUT
+// replaces the whole row — so a prompt extracted, edited and sent back alone
+// would silently delete the rest.
+func TestScheduleTaskPayload(t *testing.T) {
+	rich := json.RawMessage(`{"prompt":"old","model":"claude-opus-5","maxTurns":40}`)
+	cases := []struct {
+		name       string
+		existing   json.RawMessage
+		text       string
+		wantPrompt string
+		wantTask   map[string]any
+	}{
+		{
+			name:     "no new prompt round-trips the task verbatim",
+			existing: rich, text: "",
+			wantTask: map[string]any{"prompt": "old", "model": "claude-opus-5", "maxTurns": float64(40)},
+		},
+		{
+			name:     "a new prompt replaces only the task's own prompt",
+			existing: rich, text: "new",
+			wantTask: map[string]any{"prompt": "new", "model": "claude-opus-5", "maxTurns": float64(40)},
+		},
+		{
+			name:     "a prompt-only task takes the shorthand",
+			existing: json.RawMessage(`{"prompt":"old"}`), text: "new",
+			wantPrompt: "new",
+		},
+		{
+			name:       "no stored task takes the shorthand",
+			existing:   nil,
+			text:       "new",
+			wantPrompt: "new",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			task, prompt := scheduleTaskPayload(c.existing, c.text)
+			if prompt != c.wantPrompt {
+				t.Errorf("prompt = %q, want %q", prompt, c.wantPrompt)
+			}
+			if c.wantTask == nil {
+				if len(task) != 0 {
+					t.Fatalf("task = %s, want none", task)
+				}
+				return
+			}
+			var got map[string]any
+			if err := json.Unmarshal(task, &got); err != nil {
+				t.Fatalf("task %s: %v", task, err)
+			}
+			for k, want := range c.wantTask {
+				if got[k] != want {
+					t.Errorf("task[%q] = %v, want %v", k, got[k], want)
+				}
+			}
+			if len(got) != len(c.wantTask) {
+				t.Errorf("task = %v, want exactly %v", got, c.wantTask)
+			}
+		})
+	}
+}
