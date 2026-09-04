@@ -51,6 +51,16 @@ func (s Schedule) Prompt() string {
 	return t.Prompt
 }
 
+// Model digs the model out of the stored task. It is what a recurring job
+// spends, so a listing shows it.
+func (s Schedule) Model() string {
+	var t struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(s.Task, &t)
+	return t.Model
+}
+
 // Firing is one occurrence: what was due, what happened, and which box it
 // became.
 type Firing struct {
@@ -74,8 +84,8 @@ const (
 
 // ScheduleRequest is the write shape.
 //
-// Prompt and Task are the two ways to say what the work is, and the server
-// takes one or the other. Enabled is a pointer because the server treats an
+// Prompt+Model and Task are the two ways to say what the work is, and the
+// server takes one or the other. Enabled is a pointer because the server treats an
 // absent field as "leave it as it is" — sending false by omission would pause
 // a schedule on a request that only meant to change the prompt.
 type ScheduleRequest struct {
@@ -84,6 +94,7 @@ type ScheduleRequest struct {
 	Timezone    string          `json:"timezone,omitempty"`
 	Profile     string          `json:"profile,omitempty"`
 	Prompt      string          `json:"prompt,omitempty"`
+	Model       string          `json:"model,omitempty"`
 	Task        json.RawMessage `json:"task,omitempty"`
 	Enabled     *bool           `json:"enabled,omitempty"`
 	Overlap     string          `json:"overlap,omitempty"`

@@ -64,10 +64,10 @@ func scheduleList(ctx context.Context) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tWHEN\tNEXT\tLAST\tPROMPT")
+	fmt.Fprintln(w, "NAME\tWHEN\tNEXT\tMODEL\tLAST\tPROMPT")
 	for _, s := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			s.ID, cronColumn(s), nextColumn(s), lastColumn(s), truncateOneLine(s.Prompt(), 48))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.ID, cronColumn(s), nextColumn(s), modelColumn(s), lastColumn(s), truncateOneLine(s.Prompt(), 40))
 	}
 	return w.Flush()
 }
@@ -99,6 +99,15 @@ func nextColumn(s api.Schedule) string {
 		return "in " + shortDuration(time.Duration(s.NextRunIn)*time.Second)
 	}
 	return "due"
+}
+
+// modelColumn names what this schedule spends on. A schedule with none cannot
+// run at all, so the gap is worth showing rather than leaving blank.
+func modelColumn(s api.Schedule) string {
+	if m := s.Model(); m != "" {
+		return m
+	}
+	return "NONE — cannot run"
 }
 
 func lastColumn(s api.Schedule) string {
@@ -139,6 +148,7 @@ func scheduleShow(ctx context.Context, args []string) error {
 	if s.Profile != "" {
 		fmt.Printf("%s %s\n", label("profile "), s.Profile)
 	}
+	fmt.Printf("%s %s\n", label("model   "), modelColumn(s))
 	fmt.Printf("%s %s\n", label("overlap "), s.Overlap)
 	fmt.Printf("%s %s\n", label("prompt  "), s.Prompt())
 	if s.LastRun != nil {
@@ -161,6 +171,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		profile = fs.String("profile", "", "the posture each firing is created from; `yas` profiles set size, egress and repo")
 		desc    = fs.String("description", "", "what this is for")
 		prompt  = fs.String("prompt", "", "the prompt each firing runs; `-` reads it from stdin")
+		model   = fs.String("model", "", "the model the agent runs on, e.g. claude-sonnet-5. Required: a task with none cannot run")
 		overlap = fs.String("overlap", "", "what to do when the last firing is still running: skip (default) or allow")
 		pause   = fs.Bool("paused", false, "write it without letting the clock have it yet")
 	)
@@ -222,7 +233,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		// re-wrapped: a task written through the API can carry fields this
 		// client has never heard of — a model, a turn budget — and PUT replaces
 		// the whole row, so a re-wrapped prompt would silently clear the rest.
-		task, text = scheduleTaskPayload(existing.Task, text)
+		task, text, *model = scheduleTaskPayload(existing.Task, text, *model)
 		if *cron == "" {
 			*cron = existing.Cron
 		}
@@ -245,6 +256,17 @@ func scheduleAdd(ctx context.Context, args []string) error {
 	if text == "" && len(task) == 0 {
 		return errors.New("a schedule needs a prompt: without one it boots a box every time it fires and the box does nothing")
 	}
+	// Refused here as well as at the server, so the message arrives before a
+	// round trip and can name the flag. A task with no model cannot run, and
+	// the failure it produces inside the box names neither the cause nor the
+	// fix — see the server's own refusal for why it is not defaulted.
+	if *model == "" && len(task) == 0 {
+		return errors.New("a schedule needs -model: a task with none cannot run, and the box fails with " +
+			"\"the harness produced no agent turn: Connection error\", which explains nothing.\n" +
+			"  It is not defaulted because a schedule runs unattended and forever, so the model it spends on " +
+			"is a decision to make once.\n" +
+			"  For example: -model claude-sonnet-5, -model claude-opus-5, -model claude-haiku-4-5")
+	}
 
 	req := api.ScheduleRequest{
 		Description: *desc,
@@ -252,6 +274,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		Timezone:    *tz,
 		Profile:     *profile,
 		Prompt:      text,
+		Model:       *model,
 		Task:        task,
 		Overlap:     *overlap,
 	}
@@ -290,41 +313,36 @@ func scheduleAdd(ctx context.Context, args []string) error {
 
 const scheduleAddUsage = "usage: yas schedule add <name> -cron \"<expression>\" [flags] <prompt...>\n"
 
-// scheduleTaskPayload decides how an edit writes the work back: `task` or
-// `prompt`, never both — the server refuses a body carrying the two.
+// scheduleTaskPayload decides how a write names the work: `task` or
+// `prompt`+`model`, never both — the server refuses a body carrying the two.
 //
-// No new prompt round-trips the stored task verbatim. A new prompt replaces
-// only the task's own prompt when the task holds anything else, and takes the
-// shorthand otherwise. Either way, a field this client cannot name survives
-// the edit.
-func scheduleTaskPayload(existing json.RawMessage, text string) (json.RawMessage, string) {
-	if text == "" {
-		return existing, ""
-	}
+// An EDIT always goes back as the raw task, merged. A stored task can carry
+// fields this client cannot name (a turn budget, a system prompt), and PUT
+// replaces the whole row, so anything rebuilt from the fields it happens to
+// understand is a field silently cleared. Only the values this invocation
+// actually gave are overwritten.
+//
+// A CREATE has no stored task, so the shorthand is all there is.
+func scheduleTaskPayload(existing json.RawMessage, prompt, model string) (json.RawMessage, string, string) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(existing, &fields) != nil || len(fields) == 0 {
-		return nil, text
+		return nil, prompt, model
 	}
-	extra := false
-	for k := range fields {
-		if k != "prompt" {
-			extra = true
-			break
+	set := func(key, value string) {
+		if value == "" {
+			return
+		}
+		if enc, err := json.Marshal(value); err == nil {
+			fields[key] = enc
 		}
 	}
-	if !extra {
-		return nil, text
-	}
-	enc, err := json.Marshal(text)
-	if err != nil {
-		return nil, text
-	}
-	fields["prompt"] = enc
+	set("prompt", prompt)
+	set("model", model)
 	out, err := json.Marshal(fields)
 	if err != nil {
-		return nil, text
+		return nil, prompt, model
 	}
-	return out, ""
+	return out, "", ""
 }
 
 func scheduleRemove(ctx context.Context, args []string) error {

@@ -154,42 +154,60 @@ func TestSchedulePromptFromRawTask(t *testing.T) {
 // can carry fields this client has never heard of, and the server's PUT
 // replaces the whole row — so a prompt extracted, edited and sent back alone
 // would silently delete the rest.
+//
+// It must also never send `task` AND the shorthand together: the server refuses
+// a body carrying both, and every stored task now names a model, so the merge
+// path is the ordinary one rather than the exception.
 func TestScheduleTaskPayload(t *testing.T) {
 	rich := json.RawMessage(`{"prompt":"old","model":"claude-opus-5","maxTurns":40}`)
 	cases := []struct {
-		name       string
-		existing   json.RawMessage
-		text       string
-		wantPrompt string
-		wantTask   map[string]any
+		name          string
+		existing      json.RawMessage
+		prompt, model string
+		wantPrompt    string
+		wantModel     string
+		wantTask      map[string]any
 	}{
 		{
-			name:     "no new prompt round-trips the task verbatim",
-			existing: rich, text: "",
+			name:     "nothing new round-trips the task verbatim",
+			existing: rich,
 			wantTask: map[string]any{"prompt": "old", "model": "claude-opus-5", "maxTurns": float64(40)},
 		},
 		{
-			name:     "a new prompt replaces only the task's own prompt",
-			existing: rich, text: "new",
+			name:     "a new prompt replaces only the prompt",
+			existing: rich, prompt: "new",
 			wantTask: map[string]any{"prompt": "new", "model": "claude-opus-5", "maxTurns": float64(40)},
 		},
 		{
-			name:     "a prompt-only task takes the shorthand",
-			existing: json.RawMessage(`{"prompt":"old"}`), text: "new",
-			wantPrompt: "new",
+			name:     "a new model replaces only the model",
+			existing: rich, model: "claude-haiku-4-5",
+			wantTask: map[string]any{"prompt": "old", "model": "claude-haiku-4-5", "maxTurns": float64(40)},
 		},
 		{
-			name:       "no stored task takes the shorthand",
-			existing:   nil,
-			text:       "new",
-			wantPrompt: "new",
+			name:     "both at once, and the field neither names survives",
+			existing: rich, prompt: "new", model: "claude-sonnet-5",
+			wantTask: map[string]any{"prompt": "new", "model": "claude-sonnet-5", "maxTurns": float64(40)},
+		},
+		{
+			// A create. There is no stored task to merge into, so the
+			// shorthand is all there is.
+			name:     "no stored task takes the shorthand",
+			existing: nil,
+			prompt:   "new", model: "claude-sonnet-5",
+			wantPrompt: "new", wantModel: "claude-sonnet-5",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			task, prompt := scheduleTaskPayload(c.existing, c.text)
+			task, prompt, model := scheduleTaskPayload(c.existing, c.prompt, c.model)
 			if prompt != c.wantPrompt {
 				t.Errorf("prompt = %q, want %q", prompt, c.wantPrompt)
+			}
+			if model != c.wantModel {
+				t.Errorf("model = %q, want %q", model, c.wantModel)
+			}
+			if len(task) != 0 && (prompt != "" || model != "") {
+				t.Fatalf("sent task AND shorthand together; the server refuses that body")
 			}
 			if c.wantTask == nil {
 				if len(task) != 0 {
