@@ -84,6 +84,10 @@ func cmdExec(args []string) error {
 	}
 
 	err = cl.ExecFollow(context.Background(), id, req, handle)
+	// Without a cursor from the accepted stream, polling could read an earlier command's exit.
+	if err != nil && cursor <= 0 {
+		return err
+	}
 	// A dropped stream is not a dead command: poll the transcript onward from
 	// the cursor until the exit lands. This degradation being possible is the
 	// entire reason the stream frames and the poll share one object.
