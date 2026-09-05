@@ -42,10 +42,12 @@ func cmdSchedule(args []string) error {
 		return schedulePause(ctx, args[1:], true)
 	case "runs", "history":
 		return scheduleRuns(ctx, args[1:])
+	case "transcript", "log":
+		return scheduleTranscript(ctx, args[1:])
 	case "now", "run":
 		return scheduleNow(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown schedule command %q: list, add, show, rm, pause, resume, runs, now", args[0])
+		return fmt.Errorf("unknown schedule command %q: list, add, show, rm, pause, resume, runs, transcript, now", args[0])
 	}
 }
 
@@ -444,26 +446,96 @@ func scheduleRuns(ctx context.Context, args []string) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "WHEN\tOUTCOME\tBOX\tDETAIL")
+	fmt.Fprintln(w, "RUN\tWHEN\tOUTCOME\tKEPT\tBOX\tDETAIL")
+	kept := false
 	for _, f := range rows {
 		box := f.SandboxID
 		if box == "" {
 			box = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			f.DueAt.Local().Format("Jan 2 15:04"), f.Outcome, box, truncateOneLine(f.Detail, 60))
+		if f.Transcript != nil {
+			kept = true
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			f.ID, f.DueAt.Local().Format("Jan 2 15:04"), f.Outcome,
+			keptColumn(f), box, truncateOneLine(f.Detail, 60))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	// The point of holding the box id: a firing is a handle to a transcript.
-	// A box that has finished and been reaped no longer answers, which is why
-	// this is a hint rather than a promise.
+	// The two ways to read a run, and they have different lifetimes. The kept
+	// copy is the one that still answers next week; the box answers for about
+	// two hours after it finishes and holds things the copy does not — the
+	// egress log, the policy, a shell.
+	if kept {
+		fmt.Fprintf(os.Stderr, "\nread one: `yas schedule transcript %s <run>`\n", name)
+	}
 	for _, f := range rows {
 		if f.SandboxID != "" {
-			fmt.Fprintf(os.Stderr, "\nread one: `yas exec %s -- cat /var/log/agent.log`, or `yas ssh %s` while it is still up\n",
-				f.SandboxID, f.SandboxID)
+			fmt.Fprintf(os.Stderr, "the box itself, while it is still up: `yas ssh %s`\n", f.SandboxID)
 			break
+		}
+	}
+	return nil
+}
+
+// keptColumn says whether a run can still be read, in one word.
+//
+// "-" is not "no transcript exists"; it is "none was kept", which for a run
+// that started seconds ago simply means the copier has not been round yet. The
+// two are told apart by the age of the run, which is the column beside it.
+//
+// "live" is a copy of a run that is STILL GOING — everything it has written so
+// far, kept up to date as it goes. It is readable now and it will grow.
+func keptColumn(f api.Firing) string {
+	if f.Transcript == nil {
+		return "-"
+	}
+	switch {
+	case !f.Transcript.Final:
+		return "live"
+	case f.Transcript.Events == 0:
+		return "empty"
+	case f.Transcript.Truncated:
+		return "part"
+	}
+	return "yes"
+}
+
+// scheduleTranscript prints one kept run.
+//
+// One JSON frame per line, and deliberately: the frames are the host's own, the
+// dashboard renders them as a conversation, and a second renderer here would be
+// a second set of rules to keep in step with that one. NDJSON is what a
+// terminal can actually work with — `| jq` beats any formatting this could do.
+func scheduleTranscript(ctx context.Context, args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: yas schedule transcript <name> <run>\n" +
+			"  `yas schedule runs <name>` lists the runs and which of them were kept")
+	}
+	name, runID := args[0], args[1]
+	_, cl, err := loadClient()
+	if err != nil {
+		return err
+	}
+	t, err := cl.RunTranscript(ctx, name, runID)
+	if err != nil {
+		return err
+	}
+	if t.Transcript != nil && t.Transcript.Note != "" {
+		// On stderr, so it cannot land in the middle of a pipe. It is about the
+		// COPY and not about the run — "the box was already gone" is not
+		// something the agent did.
+		fmt.Fprintf(os.Stderr, "note: %s\n", t.Transcript.Note)
+	}
+	if len(t.Events) == 0 {
+		fmt.Fprintf(os.Stderr, "%s has no frames. The box was retired before the copy was taken.\n", runID)
+		return nil
+	}
+	enc := json.NewEncoder(os.Stdout)
+	for _, e := range t.Events {
+		if err := enc.Encode(e); err != nil {
+			return err
 		}
 	}
 	return nil

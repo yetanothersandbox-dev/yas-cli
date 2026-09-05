@@ -87,6 +87,7 @@ func usage(w *os.File) {
 	row("yas schedule", "recurring prompts; each firing is a fresh box that stops itself")
 	row("yas schedule add <name>", "-cron \"0 3 * * *\" -tz Europe/London \"triage new issues\"")
 	row("yas schedule runs <name>", "what fired, when, and which box it became")
+	row("yas schedule transcript <name> <run>", "read a past run, kept after its box was gone")
 	row("yas schedule now <name>", "run one immediately, without moving its clock")
 
 	fmt.Fprintln(w, "\n"+head("account"))

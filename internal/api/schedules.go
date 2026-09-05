@@ -70,6 +70,43 @@ type Firing struct {
 	SandboxID string    `json:"sandboxId,omitempty"`
 	Outcome   string    `json:"outcome"`
 	Detail    string    `json:"detail,omitempty"`
+	// Transcript is the archived copy's summary, absent when none was kept.
+	// Its presence is the answer to "can I still read this run?" — a box holds
+	// its own transcript for about two hours and this copy outlives it.
+	Transcript *TranscriptMeta `json:"transcript,omitempty"`
+}
+
+// TranscriptMeta is what the control plane kept of one run, minus the run.
+//
+// ArchivedAt is when the COPY was taken and not when the run happened; the gap
+// is how long the box took to finish plus one archiver pass.
+type TranscriptMeta struct {
+	ArchivedAt time.Time `json:"archivedAt"`
+	Events     int       `json:"events"`
+	Bytes      int64     `json:"bytes"`
+	// Final false means the run was still going when this copy was taken, and
+	// the next pass will extend it. A copy is kept up to date as a run goes
+	// rather than taken once at the end, so what is stored is never further
+	// behind than the refresh interval.
+	Final bool `json:"final"`
+	// LastSeq is the highest host frame number this copy holds.
+	LastSeq   int64 `json:"lastSeq,omitempty"`
+	Truncated bool  `json:"truncated"`
+	// Note is about the COPY and never about the run: the box was already
+	// gone, or the copy stopped at its cap.
+	Note string `json:"note,omitempty"`
+}
+
+// ArchivedTranscript is one kept run, frames and all.
+//
+// Events is the SAME shape a live box answers with, frame for frame, which is
+// what lets one reader render an archived run and a running one.
+type ArchivedTranscript struct {
+	Events     []Event         `json:"events"`
+	FiringID   string          `json:"firingId"`
+	SandboxID  string          `json:"sandboxId,omitempty"`
+	Transcript *TranscriptMeta `json:"transcript,omitempty"`
+	Terminal   bool            `json:"terminal"`
 }
 
 // The outcomes a firing reports. Mirrors the server's set; a value outside it
@@ -139,6 +176,19 @@ func (c *Client) Firings(ctx context.Context, id string, limit int) ([]Firing, e
 		return nil, err
 	}
 	return out.Firings, nil
+}
+
+// RunTranscript reads one archived run.
+//
+// It is scoped by the SCHEDULE, which is what the server checks first: a firing
+// id is derived from a schedule name and a slot, so it is guessable and cannot
+// be the thing that authorises the read.
+func (c *Client) RunTranscript(ctx context.Context, scheduleID, firingID string) (ArchivedTranscript, error) {
+	var out ArchivedTranscript
+	err := c.do(ctx, "GET",
+		"/v1/schedules/"+url.PathEscape(scheduleID)+"/firings/"+url.PathEscape(firingID)+"/transcript",
+		nil, &out)
+	return out, err
 }
 
 // RunSchedule fires a schedule now, beside its cadence rather than instead of
