@@ -22,7 +22,8 @@ import (
 func cmdLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	anthropic := fs.Bool("anthropic", false, "store an Anthropic API key for new boxes (host-side proxy only; never enters a guest)")
-	github := fs.Bool("github", false, "store a GitHub token for new boxes")
+	github := fs.Bool("github", false, "store a GitHub API token for boxes: the whole REST API, taken from the `gh` CLI when it is signed in")
+	attach := fs.String("attach", "", "with -github: where it applies (all, box:<name>, profile:<id>); default keeps the existing attachment, or `all` on a first run")
 	openai := fs.Bool("openai", false, "store an OpenAI key for new boxes")
 	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
 	device := fs.Bool("device", false, "use the GitHub device flow (for SSH sessions and browserless machines)")
@@ -44,9 +45,14 @@ func cmdLogin(args []string) error {
 	case *anthropic:
 		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
 	case *github:
-		// The github token is no longer pasted at all: it comes from the
-		// GitHub sign-in and lives server-side.
-		return errors.New("github access now comes from `yas login` itself (the GitHub sign-in); there is nothing to paste")
+		// NOT the same credential the GitHub sign-in leaves in custody, and
+		// this used to refuse on the grounds that it was. That refusal was
+		// written before integrations existed and was only ever half true: the
+		// sign-in token serves the built-in /ghapi route, which is an allowlist
+		// of /repos/{owner}/{name}/... paths with no search on it, and it is a
+		// GitHub APP token reaching only what that App is installed on. See
+		// storeGitHubIntegration.
+		return storeGitHubIntegration(cfg, *attach)
 	case *openai:
 		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
 	default:
