@@ -43,7 +43,7 @@ type IntegrationRequest struct {
 	Upstream     string   `json:"upstream,omitempty"`
 	Inject       any      `json:"inject,omitempty"`
 	Secret       *string  `json:"secret,omitempty"`
-	Attach       []string `json:"attach,omitempty"`
+	Attach       []string `json:"attach,omitzero"`
 	ExpiresInSec int      `json:"expiresInSec,omitempty"`
 	StripPrefix  string   `json:"stripPrefix,omitempty"`
 	Methods      []string `json:"methods,omitempty"`
@@ -119,12 +119,7 @@ func (c *Client) AttachTo(ctx context.Context, id, spec string, add bool) (Integ
 	} else if len(next) == len(cur.Attach) {
 		return Integration{}, fmt.Errorf("%s is not attached to %s", id, spec)
 	}
-	// An empty list has to be sent as one, not omitted — `attach: null` means
-	// "leave it alone" to the server, which would make detaching the last spec
-	// silently do nothing.
-	if next == nil {
-		next = []string{}
-	}
+	// next is non-nil, so the last detach sends an empty list instead of omitting it.
 	return c.PutIntegration(ctx, id, IntegrationRequest{Attach: next})
 }
 
