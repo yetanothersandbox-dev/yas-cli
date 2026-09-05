@@ -166,14 +166,15 @@ func scheduleAdd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("schedule add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		cron    = fs.String("cron", "", "when to run: a 5-field expression, e.g. \"0 3 * * *\" (03:00 daily)")
-		tz      = fs.String("tz", "", "IANA timezone the expression is read in (default UTC)")
-		profile = fs.String("profile", "", "the posture each firing is created from; `yas` profiles set size, egress and repo")
-		desc    = fs.String("description", "", "what this is for")
-		prompt  = fs.String("prompt", "", "the prompt each firing runs; `-` reads it from stdin")
-		model   = fs.String("model", "", "the model the agent runs on, e.g. claude-sonnet-5. Required: a task with none cannot run")
-		overlap = fs.String("overlap", "", "what to do when the last firing is still running: skip (default) or allow")
-		pause   = fs.Bool("paused", false, "write it without letting the clock have it yet")
+		cron     = fs.String("cron", "", "when to run: a 5-field expression, e.g. \"0 3 * * *\" (03:00 daily)")
+		tz       = fs.String("tz", "", "IANA timezone the expression is read in (default UTC)")
+		profile  = fs.String("profile", "", "the posture each firing is created from; `yas` profiles set size, egress and repo")
+		desc     = fs.String("description", "", "what this is for")
+		prompt   = fs.String("prompt", "", "the prompt each firing runs; `-` reads it from stdin")
+		model    = fs.String("model", "", "the model the agent runs on, e.g. claude-sonnet-5. Required: a task with none cannot run")
+		provider = fs.String("provider", "", "which LLM the model belongs to: anthropic (default) or openai. Required for a gpt-* model, whose firings otherwise boot a box with no route to OpenAI")
+		overlap  = fs.String("overlap", "", "what to do when the last firing is still running: skip (default) or allow")
+		pause    = fs.Bool("paused", false, "write it without letting the clock have it yet")
 	)
 	// The name is taken off the front before parsing, for the reason
 	// integrationsAdd spells out: Go's flag package stops at the first bare
@@ -213,6 +214,15 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		text = strings.TrimSpace(string(b))
 	}
 
+	// Normalised in place, before anything reads it: the flag's spellings and
+	// the wire's are not the same set ("anthropic" is written as empty), and an
+	// edit merges this value into a stored task further down.
+	providerName, err := parseProvider(*provider)
+	if err != nil {
+		return err
+	}
+	*provider = providerName
+
 	_, cl, err := loadClient()
 	if err != nil {
 		return err
@@ -233,7 +243,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		// re-wrapped: a task written through the API can carry fields this
 		// client has never heard of — a model, a turn budget — and PUT replaces
 		// the whole row, so a re-wrapped prompt would silently clear the rest.
-		task, text, *model = scheduleTaskPayload(existing.Task, text, *model)
+		task, text, *model, *provider = scheduleTaskPayload(existing.Task, text, *model, providerName)
 		if *cron == "" {
 			*cron = existing.Cron
 		}
@@ -275,6 +285,7 @@ func scheduleAdd(ctx context.Context, args []string) error {
 		Profile:     *profile,
 		Prompt:      text,
 		Model:       *model,
+		Provider:    *provider,
 		Task:        task,
 		Overlap:     *overlap,
 	}
@@ -323,10 +334,10 @@ const scheduleAddUsage = "usage: yas schedule add <name> -cron \"<expression>\" 
 // actually gave are overwritten.
 //
 // A CREATE has no stored task, so the shorthand is all there is.
-func scheduleTaskPayload(existing json.RawMessage, prompt, model string) (json.RawMessage, string, string) {
+func scheduleTaskPayload(existing json.RawMessage, prompt, model, provider string) (json.RawMessage, string, string, string) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(existing, &fields) != nil || len(fields) == 0 {
-		return nil, prompt, model
+		return nil, prompt, model, provider
 	}
 	set := func(key, value string) {
 		if value == "" {
@@ -338,11 +349,16 @@ func scheduleTaskPayload(existing json.RawMessage, prompt, model string) (json.R
 	}
 	set("prompt", prompt)
 	set("model", model)
+	// Only when this invocation named one. An edit that says nothing about the
+	// provider must leave the stored one alone: it is fixed for the life of
+	// every box the schedule fires, and clearing it would silently move a
+	// running OpenAI schedule onto the Anthropic table.
+	set("provider", provider)
 	out, err := json.Marshal(fields)
 	if err != nil {
-		return nil, prompt, model
+		return nil, prompt, model, provider
 	}
-	return out, "", ""
+	return out, "", "", ""
 }
 
 func scheduleRemove(ctx context.Context, args []string) error {

@@ -34,18 +34,40 @@ func cmdPassthrough(args []string) error {
 	case boxID != "":
 	case forceNew || !cliio.IsTTY(os.Stdin) || !cliio.IsTTY(os.Stdout):
 		// Scripted (or asked): a fresh box, no questions.
-		boxID, err = createBox(ctx, cl, cfg, createOpts{})
+		boxID, err = createBox(ctx, cl, cfg, createOpts{Provider: providerForCommand(remote[0])})
 		if err != nil {
 			return err
 		}
 	default:
 		// Interactive: offer the picker, with "new box" as the first entry.
-		boxID, err = pickBox(cl, cfg, fmt.Sprintf("run `%s` in...", remote[0]))
+		boxID, err = pickBox(cl, cfg, fmt.Sprintf("run `%s` in...", remote[0]), providerForCommand(remote[0]))
 		if err != nil {
 			return err
 		}
 	}
 	return remapExit(sshutil.Connect(ctx, cl, cfg, boxID, remote))
+}
+
+// providerForCommand is which provider a box has to be for, to run this command.
+//
+// `yas <anything>` runs <anything> inside a box, and a box is wired to exactly
+// one provider before it boots — so for the two commands that ARE an agent, the
+// word the user typed is the only statement of intent available. Without this,
+// `yas codex` made an Anthropic box, and codex started in it with no
+// OPENAI_BASE_URL and reached for the real internet, which a box has no route
+// to. It failed as a network timeout, naming neither the provider nor the
+// create that chose it.
+//
+// Only the two agent CLIs are listed. Everything else — `yas bash`, `yas vim` —
+// gets the default, because nothing about those words says which model the box
+// should be able to reach.
+func providerForCommand(cmd string) string {
+	switch cmd {
+	case "codex":
+		return "openai"
+	default:
+		return ""
+	}
 }
 
 // splitPassthrough peels yas's own flags off the FRONT and leaves the remote

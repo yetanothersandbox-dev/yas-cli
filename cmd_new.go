@@ -37,6 +37,7 @@ func cmdNew(args []string) error {
 	connect := fs.String("connect", "", "comma-separated CONNECT tunnel targets for a proxy-mode box (host or host:port, e.g. ssh.github.com:22)")
 	noCreds := fs.Bool("no-creds", false, "attach no credentials to this box, whatever is stored")
 	profile := fs.String("profile", "", "create from a saved profile: its posture, size and repo, unless a flag here overrides them")
+	provider := fs.String("provider", "", "which LLM this box is for: anthropic (default) or openai. Fixed at create — it decides the box's route table and which agent CLI works in it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,6 +48,11 @@ func cmdNew(args []string) error {
 	}
 
 	milliVcpu, err := parseVcpus(*cpus)
+	if err != nil {
+		return err
+	}
+
+	providerName, err := parseProvider(*provider)
 	if err != nil {
 		return err
 	}
@@ -73,7 +79,7 @@ func cmdNew(args []string) error {
 	id, err := createBox(context.Background(), cl, cfg, createOpts{
 		Name: boxName, MemMiB: *mem, MilliVcpu: milliVcpu, DiskMiB: *disk,
 		MaxLifetimeSec: *lifetime, Policy: pol,
-		Profile: *profile,
+		Profile: *profile, Provider: providerName,
 	})
 	if err != nil {
 		return err
@@ -123,6 +129,30 @@ type createOpts struct {
 	// set explicitly here still wins over it — that is the server's rule, not
 	// this client's, and it is why the two are not merged locally.
 	Profile string
+	// Provider is the LLM this box is for: "openai", or empty for Anthropic.
+	Provider string
+}
+
+// parseProvider validates the -provider flag here rather than letting the
+// server do it.
+//
+// The server refuses an unknown provider with a 400 and that is the enforcement
+// — but this is the only place that can name the two spellings while the user
+// still has the command line in front of them, and a create is slow enough that
+// a round trip to learn you typed "gpt" is a bad trade.
+//
+// The names are the VENDORS. Not "codex" or "claude", which are products, and
+// not a model id: which model a box runs is a per-task decision, and the
+// provider is a per-box one.
+func parseProvider(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "anthropic":
+		return "", nil // empty is what an Anthropic box has always sent
+	case "openai":
+		return "openai", nil
+	default:
+		return "", fmt.Errorf("unknown provider %q; this fleet routes anthropic and openai", s)
+	}
 }
 
 // parseVcpus turns the human spelling of a vCPU count — "2", "0.5", "1.25" —
@@ -280,6 +310,7 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		ID:             id,
 		Policy:         o.Policy,
 		Profile:        o.Profile,
+		Provider:       o.Provider,
 		MemMiB:         firstNonZero(o.MemMiB, cfg.Defaults.MemMiB),
 		MilliVcpu:      firstNonZero(o.MilliVcpu, cfg.Defaults.MilliVcpu, cfg.Defaults.VcpuCount*1000),
 		DiskMiB:        firstNonZero(o.DiskMiB, cfg.Defaults.DiskMiB),

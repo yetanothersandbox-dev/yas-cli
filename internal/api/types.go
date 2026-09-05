@@ -35,6 +35,16 @@ type CreateRequest struct {
 	AnthropicKey string `json:"anthropicKey,omitempty"`
 	GitHubToken  string `json:"githubToken,omitempty"`
 	OpenAIKey    string `json:"openaiKey,omitempty"`
+	// Provider is the LLM upstream this box is wired to: "openai", or empty for
+	// Anthropic. Fixed at create and unchangeable afterwards — the credential
+	// proxy's route table is built from it before the guest boots — so it is
+	// here rather than on a later call.
+	//
+	// It is what makes a bare box usable for anything but Claude. `yas new`
+	// sends no task, so there was nowhere at all to say which provider a box
+	// was for, and every box the CLI made was an Anthropic box regardless of
+	// which key the account held.
+	Provider string `json:"provider,omitempty"`
 	// Policy is the box's egress posture. Absent = proxy mode (no route off the
 	// link, everything through the credential proxy) — exactly what every create
 	// was before policies. Credentials go through the proxy in every mode.

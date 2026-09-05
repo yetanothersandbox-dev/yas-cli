@@ -161,12 +161,13 @@ func TestSchedulePromptFromRawTask(t *testing.T) {
 func TestScheduleTaskPayload(t *testing.T) {
 	rich := json.RawMessage(`{"prompt":"old","model":"claude-opus-5","maxTurns":40}`)
 	cases := []struct {
-		name          string
-		existing      json.RawMessage
-		prompt, model string
-		wantPrompt    string
-		wantModel     string
-		wantTask      map[string]any
+		name                    string
+		existing                json.RawMessage
+		prompt, model, provider string
+		wantPrompt              string
+		wantModel               string
+		wantProvider            string
+		wantTask                map[string]any
 	}{
 		{
 			name:     "nothing new round-trips the task verbatim",
@@ -196,17 +197,42 @@ func TestScheduleTaskPayload(t *testing.T) {
 			prompt:   "new", model: "claude-sonnet-5",
 			wantPrompt: "new", wantModel: "claude-sonnet-5",
 		},
+		{
+			// The provider is fixed for the life of every box a schedule
+			// fires, so an edit that never mentions it must not clear it —
+			// that would quietly move a running OpenAI schedule onto the
+			// Anthropic table, where it has no route to its own model.
+			name:     "an edit that names no provider leaves the stored one alone",
+			existing: json.RawMessage(`{"prompt":"old","model":"gpt-5-codex","provider":"openai"}`),
+			prompt:   "new",
+			wantTask: map[string]any{"prompt": "new", "model": "gpt-5-codex", "provider": "openai"},
+		},
+		{
+			name:     "a new provider replaces only the provider",
+			existing: json.RawMessage(`{"prompt":"old","model":"gpt-5","provider":"openai","maxTurns":40}`),
+			provider: "anthropic",
+			wantTask: map[string]any{"prompt": "old", "model": "gpt-5", "provider": "anthropic", "maxTurns": float64(40)},
+		},
+		{
+			name:     "a create carries the provider as shorthand",
+			existing: nil,
+			prompt:   "new", model: "gpt-5-codex", provider: "openai",
+			wantPrompt: "new", wantModel: "gpt-5-codex", wantProvider: "openai",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			task, prompt, model := scheduleTaskPayload(c.existing, c.prompt, c.model)
+			task, prompt, model, provider := scheduleTaskPayload(c.existing, c.prompt, c.model, c.provider)
 			if prompt != c.wantPrompt {
 				t.Errorf("prompt = %q, want %q", prompt, c.wantPrompt)
 			}
 			if model != c.wantModel {
 				t.Errorf("model = %q, want %q", model, c.wantModel)
 			}
-			if len(task) != 0 && (prompt != "" || model != "") {
+			if provider != c.wantProvider {
+				t.Errorf("provider = %q, want %q", provider, c.wantProvider)
+			}
+			if len(task) != 0 && (prompt != "" || model != "" || provider != "") {
 				t.Fatalf("sent task AND shorthand together; the server refuses that body")
 			}
 			if c.wantTask == nil {

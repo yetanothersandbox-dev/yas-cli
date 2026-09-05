@@ -22,7 +22,9 @@ func cmdPicker() error {
 	if err != nil {
 		return err
 	}
-	id, err := pickBox(cl, cfg, "your boxes")
+	// Bare `yas` names no agent, so it names no provider either: a box made
+	// here is an ordinary Anthropic one, exactly as it was.
+	id, err := pickBox(cl, cfg, "your boxes", "")
 	if errors.Is(err, errQuit) {
 		return nil
 	}
@@ -34,12 +36,18 @@ func cmdPicker() error {
 
 // pickBox runs the picker (and, on "new box", the create form + the create)
 // and returns the id to connect to.
-func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
+//
+// provider is what a box created from here is wired to — the caller's, not the
+// user's: `yas codex` needs an OpenAI box and there is no question in this UI
+// that asks for one. It has no effect on picking an EXISTING box, which cannot
+// be rewired; a box created for the other provider simply will not run this
+// agent, and says so when the agent starts.
+func pickBox(cl *api.Client, cfg config.Config, title, provider string) (string, error) {
 	// Looping, because ESC out of the create form means "not that, then" and
 	// not "goodbye". It used to end the program, so changing your mind about a
 	// new box threw away the picker you had opened to get there.
 	for {
-		id, err := pickOnce(cl, cfg, title)
+		id, err := pickOnce(cl, cfg, title, provider)
 		if errors.Is(err, errBackToPicker) {
 			continue
 		}
@@ -50,7 +58,7 @@ func pickBox(cl *api.Client, cfg config.Config, title string) (string, error) {
 // errBackToPicker asks pickBox for another turn round the menu.
 var errBackToPicker = errors.New("back to the picker")
 
-func pickOnce(cl *api.Client, cfg config.Config, title string) (string, error) {
+func pickOnce(cl *api.Client, cfg config.Config, title, provider string) (string, error) {
 	res, err := tui.RunPicker(cl, title)
 	if err != nil {
 		return "", err
@@ -90,7 +98,7 @@ func pickOnce(cl *api.Client, cfg config.Config, title string) (string, error) {
 			}
 			id, err := createBox(context.Background(), cl, cfg, createOpts{
 				Name: opts.Name, MemMiB: opts.MemMiB, MilliVcpu: opts.MilliVcpu,
-				Policy: pol,
+				Policy: pol, Provider: provider,
 			})
 			if err == nil {
 				return id, nil

@@ -95,6 +95,7 @@ type ScheduleRequest struct {
 	Profile     string          `json:"profile,omitempty"`
 	Prompt      string          `json:"prompt,omitempty"`
 	Model       string          `json:"model,omitempty"`
+	Provider    string          `json:"provider,omitempty"`
 	Task        json.RawMessage `json:"task,omitempty"`
 	Enabled     *bool           `json:"enabled,omitempty"`
 	Overlap     string          `json:"overlap,omitempty"`
