@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api/apitest"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api/apitest"
 )
 
 // dialStream against the hijacking fake: the 101 must verify, and — the bug

@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // A picker frame, without a gateway.

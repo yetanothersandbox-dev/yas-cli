@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // cmdRegion shows or sets where this account's boxes run.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // cmdExec runs one non-interactive command and streams its output. For a

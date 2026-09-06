@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/cliio"
-	"github.com/Gilbert09/yas/clients/yas/internal/sshutil"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/cliio"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/sshutil"
 )
 
 // cmdPassthrough is `yas <command> [args...]`: run a command interactively

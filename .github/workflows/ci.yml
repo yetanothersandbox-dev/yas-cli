@@ -1,0 +1,38 @@
+# Every push and every pull request. The CLI is the one part of yas a customer
+# installs on their own machine, so a broken main here is a broken `brew
+# install` rather than an internal inconvenience.
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: vet + test + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod, cache: true }
+
+      - name: gofmt
+        # Not cosmetic here: this repo is public and a diff full of formatting
+        # noise is what stops an outside patch being readable.
+        run: |
+          unformatted="$(gofmt -l . || true)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change: $unformatted"
+            exit 1
+          fi
+
+      - run: make test
+
+      # The RELEASE recipe, not just `go build`. A release built by a command
+      # nobody runs on a normal day is a release nobody has tried: cross-compile
+      # every platform the tap serves, on every commit, so a broken GOARCH is
+      # found here and not by somebody's `brew install`.
+      - run: make dist

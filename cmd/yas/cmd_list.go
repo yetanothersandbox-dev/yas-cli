@@ -10,10 +10,10 @@ import (
 	"sync"
 	"text/tabwriter"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // boxRow is one listed sandbox with its per-id detail filled in.

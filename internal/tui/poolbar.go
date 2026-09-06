@@ -6,8 +6,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // The pool, drawn — components/pool-bar.tsx, in one row of cells.

@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/cliio"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/cliio"
 )
 
 // remapExit converts ssh's exit into ours: a remote command's exit code is

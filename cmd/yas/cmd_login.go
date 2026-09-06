@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/config"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/config"
 )
 
 // cmdLogin stores credentials in ~/.config/yas/config.json. The API key is

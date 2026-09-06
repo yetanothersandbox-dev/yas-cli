@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/config"
-	"github.com/Gilbert09/yas/clients/yas/internal/tui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/config"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/tui"
 )
 
 // EnsureIdentity returns the private-key path to hand ssh -i, generating the

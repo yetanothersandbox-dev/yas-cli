@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // cmdDefaults shows or sets the size a box gets when `yas new` names none.

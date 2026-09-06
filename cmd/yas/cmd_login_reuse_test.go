@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/config"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/config"
 )
 
 // Signing in twice must not leave two credentials behind.

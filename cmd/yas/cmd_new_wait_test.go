@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // The rungs escalate, and each one says only what is knowable from a clock.

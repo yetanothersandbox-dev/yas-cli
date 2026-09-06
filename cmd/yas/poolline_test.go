@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // The pool line has to survive a pool that is not a whole number of gigabytes.

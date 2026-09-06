@@ -11,11 +11,11 @@ import (
 
 	"flag"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/config"
-	"github.com/Gilbert09/yas/clients/yas/internal/names"
-	"github.com/Gilbert09/yas/clients/yas/internal/sshutil"
-	"github.com/Gilbert09/yas/clients/yas/internal/ui"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/config"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/names"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/sshutil"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // cmdNew creates one bare box and connects. A bare create is synchronous —

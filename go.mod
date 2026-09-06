@@ -2,7 +2,7 @@
 // (two external deps ever, each with a written justification), and a terminal
 // UI is not worth breaking that for. Everything charm pulls in stays behind
 // this go.mod; the root module's builds, hashes and golden ids never see it.
-module github.com/Gilbert09/yas/clients/yas
+module github.com/yetanothersandbox-dev/yas-cli
 
 go 1.25.0
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 func TestExecDoesNotRecoverWithoutACursor(t *testing.T) {

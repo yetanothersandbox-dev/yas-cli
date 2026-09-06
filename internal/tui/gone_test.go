@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // A parked box is not counting down its LIFETIME — it is not running. What

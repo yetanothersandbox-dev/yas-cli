@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/sshutil"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/sshutil"
 )
 
 // cmdSSH opens an interactive shell in an existing box.

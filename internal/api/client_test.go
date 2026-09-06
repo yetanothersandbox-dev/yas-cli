@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
-	"github.com/Gilbert09/yas/clients/yas/internal/api/apitest"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api/apitest"
 )
 
 func newClient(t *testing.T) (*api.Client, *apitest.Gateway) {

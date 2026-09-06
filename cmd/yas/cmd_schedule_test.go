@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gilbert09/yas/clients/yas/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
 )
 
 // `yas schedule` reserves a verb, which shadows any program of that name. The
