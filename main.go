@@ -181,6 +181,18 @@ func main() {
 
 // loadClient builds the authenticated client every command shares. The key
 // missing is the first thing a new user hits, so the message names the fix.
+// wantsHelp reports whether an argument is somebody asking for the usage line.
+//
+// The commands that take exactly one box id have no FlagSet, so `-h` was not a
+// flag to them — it was the id. `yas suspend -h` asked the API to suspend a box
+// called "-h" and answered `not_found`, which is a refusal where help was
+// wanted. Checked at each of those call sites rather than centrally: the
+// commands that DO have a FlagSet already answer `-h` themselves, and a global
+// intercept would take it away from them.
+func wantsHelp(arg string) bool {
+	return arg == "-h" || arg == "--help" || arg == "-help" || arg == "help"
+}
+
 func loadClient() (config.Config, *api.Client, error) {
 	cfg, err := config.Load()
 	if err != nil {

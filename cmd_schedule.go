@@ -62,7 +62,10 @@ func scheduleList(ctx context.Context) error {
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(os.Stderr, "no schedules. Add one:")
-		fmt.Fprintln(os.Stderr, `  yas schedule add nightly -cron "0 3 * * *" -tz Europe/London "triage new issues"`)
+		// -model is in the hint because this same file refuses a schedule
+		// without one eleven lines later. A suggestion the product then
+		// rejects teaches the refusal instead of the command.
+		fmt.Fprintln(os.Stderr, `  yas schedule add nightly -cron "0 3 * * *" -tz Europe/London -model claude-sonnet-5 "triage new issues"`)
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)

@@ -342,7 +342,11 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		case api.ErrorKind(err) == "conflict":
 			return "", fmt.Errorf("the name %q is unavailable; pick another", id)
 		case api.IsQuota(err):
-			return "", fmt.Errorf("your quota is full: %w — `yas list` and `yas rm` something", err)
+			// SUSPEND FIRST, and rm second. The pool this refuses on is
+			// memory, and suspending returns all of it while keeping the disk
+			// — so `rm` destroys work to solve a problem suspend solves for
+			// nothing. The dashboard has always said it this way round.
+			return "", fmt.Errorf("your quota is full: %w — `yas suspend` a box you are not using (it keeps its disk and costs nothing), or `yas rm` one you have finished with", err)
 		case api.IsNoCapacity(err):
 			return "", fmt.Errorf("the fleet has no capacity right now: %w — try again shortly", err)
 		default:

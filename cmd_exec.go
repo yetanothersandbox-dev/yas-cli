@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Gilbert09/yas/clients/yas/internal/api"
@@ -20,19 +21,42 @@ import (
 // connection, never the command: the output lands in the box's transcript
 // with a host-assigned cursor, and this resumes reading from the cursor it
 // already has.
+const execUsage = "usage: yas exec <id> [-shell] [-cwd dir] [-timeout d] -- cmd [args...]"
+
 func cmdExec(args []string) error {
 	fs := flag.NewFlagSet("exec", flag.ExitOnError)
 	shell := fs.Bool("shell", false, "run through the guest's shell instead of as argv")
 	cwd := fs.String("cwd", "", "working directory inside the box")
 	timeout := fs.Duration("timeout", 0, "kill the command after this long (guest-side)")
+	// The id comes off the FRONT before parsing, the way `integrations add` and
+	// `schedule add` take theirs.
+	//
+	// Go's flag package stops at the first bare word, so parsing `exec api
+	// -cwd /work -- make test` whole leaves `-cwd` unparsed and hands it to the
+	// guest as part of the command: the working directory is silently ignored
+	// and the box runs `-cwd /work -- make test`. Both examples in the docs
+	// used that order, and so did this command's own usage string, so the
+	// documented form was the broken one.
+	id := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rest := fs.Args()
-	if len(rest) < 2 || rest[1] == "" {
-		return errors.New("usage: yas exec <id> [-shell] [-cwd dir] -- cmd [args...]")
+	if id == "" {
+		// Flags first, id after them. Accepted too — neither order should be
+		// the one that silently does the wrong thing.
+		if len(rest) == 0 {
+			return errors.New(execUsage)
+		}
+		id, rest = rest[0], rest[1:]
 	}
-	id, cmd := rest[0], rest[1:]
+	if len(rest) == 0 || (len(rest) == 1 && rest[0] == "--") {
+		return errors.New(execUsage)
+	}
+	cmd := rest
 	if cmd[0] == "--" {
 		cmd = cmd[1:]
 	}

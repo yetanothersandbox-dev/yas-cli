@@ -9,7 +9,7 @@ import (
 
 // cmdSSH opens an interactive shell in an existing box.
 func cmdSSH(args []string) error {
-	if len(args) != 1 {
+	if len(args) != 1 || wantsHelp(args[0]) {
 		return errors.New("usage: yas ssh <id>")
 	}
 	cfg, cl, err := loadClient()

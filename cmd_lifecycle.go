@@ -52,7 +52,7 @@ func cmdRemove(args []string) error {
 }
 
 func cmdSuspend(args []string) error {
-	if len(args) != 1 {
+	if len(args) != 1 || wantsHelp(args[0]) {
 		return errors.New("usage: yas suspend <id>")
 	}
 	_, cl, err := loadClient()
@@ -63,7 +63,7 @@ func cmdSuspend(args []string) error {
 }
 
 func cmdResume(args []string) error {
-	if len(args) != 1 {
+	if len(args) != 1 || wantsHelp(args[0]) {
 		return errors.New("usage: yas resume <id>")
 	}
 	_, cl, err := loadClient()

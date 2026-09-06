@@ -111,6 +111,19 @@ func integrationsCatalog(ctx context.Context, args []string) error {
 			fmt.Printf("\nAdd it with:\n  yas integrations add %s --service %s --secret -\n", e.Handle, e.Handle)
 			return nil
 		}
+		// An LLM vendor is not an integration: the key the agent runs on is set
+		// once for the account. Said here as well as at the server, so the
+		// answer arrives without a round trip and names the door that works.
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "anthropic", "claude":
+			return errors.New("anthropic is not an integration: the key your agent runs on is set once " +
+				"for the account, with `yas login -anthropic`. A box reaches Anthropic on its own route " +
+				"with no attachment needed")
+		case "openai", "codex", "chatgpt":
+			return errors.New("openai is not an integration: the key your agent runs on is set once " +
+				"for the account, with `yas login -openai`. A box created with `-provider openai` " +
+				"reaches OpenAI on its own route with no attachment needed")
+		}
 		return fmt.Errorf("no catalogue service named %q; `yas integrations catalog` lists them", args[0])
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)

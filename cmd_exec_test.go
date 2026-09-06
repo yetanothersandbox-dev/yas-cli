@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -103,5 +105,68 @@ func TestExecRecoversFromCurrentCursor(t *testing.T) {
 				t.Errorf("requests = %v, want %v", requests, want)
 			}
 		})
+	}
+}
+
+// THE ARGUMENT ORDER THE DOCS TAUGHT.
+//
+// Go's flag package stops at the first bare word, so parsing the whole of
+// `exec api -cwd /work -- make test` left `-cwd` unparsed and handed it to the
+// guest as part of the command: the working directory was silently dropped and
+// the box was asked to run `-cwd /work -- make test`. Both examples in the docs
+// used that order, and so did this command's own usage string.
+//
+// The request body is what proves it: the flags must arrive as FIELDS and the
+// command must be exactly what was after the `--`.
+func TestExecTakesFlagsOnEitherSideOfTheId(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"id first, as the docs show", []string{"box", "-cwd", "/work", "-shell", "--", "make", "test"}},
+		{"flags first", []string{"-cwd", "/work", "-shell", "box", "--", "make", "test"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				body = string(b)
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"events\":[{\"seq\":1,\"event\":{\"type\":\"exec_exit\",\"raw\":{\"exitCode\":0}}}],\"cursor\":1,\"terminal\":true}\n\n")
+			}))
+			defer srv.Close()
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("YAS_BASE_URL", srv.URL)
+			t.Setenv("YAS_API_KEY", "yas_sk_test")
+
+			if err := cmdExec(tc.args); err != nil {
+				t.Fatalf("exec: %v", err)
+			}
+			var sent struct {
+				Cmd   []string `json:"cmd"`
+				Cwd   string   `json:"cwd"`
+				Shell bool     `json:"shell"`
+			}
+			if err := json.Unmarshal([]byte(body), &sent); err != nil {
+				t.Fatalf("body %q: %v", body, err)
+			}
+			if sent.Cwd != "/work" {
+				t.Errorf("cwd = %q, want /work — the flag was swallowed into the command", sent.Cwd)
+			}
+			if !sent.Shell {
+				t.Error("shell = false; the flag was swallowed into the command")
+			}
+			if !reflect.DeepEqual(sent.Cmd, []string{"make", "test"}) {
+				t.Errorf("cmd = %v, want [make test]", sent.Cmd)
+			}
+		})
+	}
+}
+
+func TestExecRefusesWithoutACommand(t *testing.T) {
+	for _, args := range [][]string{{}, {"box"}, {"box", "--"}, {"-shell"}} {
+		if err := cmdExec(args); err == nil || !strings.Contains(err.Error(), "usage: yas exec") {
+			t.Errorf("cmdExec(%v) = %v, want the usage line", args, err)
+		}
 	}
 }
