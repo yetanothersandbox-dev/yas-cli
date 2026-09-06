@@ -64,14 +64,21 @@ jobs:
       # a checksum mismatch and no explanation.
       - name: update the Homebrew tap
         env:
-          # A token with contents:write on the tap repo. Without it the release
-          # still publishes and only the tap lags — said loudly rather than
-          # failing the release, because the binaries are already public.
+          # A token with contents:write on the tap repo, set as an ORG secret.
+          #
+          # An org secret has a VISIBILITY, and this repository is public — a
+          # secret scoped to "private repositories" simply arrives empty here,
+          # with no error anywhere. That is the failure this step is written to
+          # catch, because its symptom is otherwise invisible: releases keep
+          # publishing and `brew install` quietly keeps serving the old version.
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then
-            echo "::warning::no TAP_TOKEN; the release is published but the tap still points at the previous version."
-            exit 0
+            echo "::error::TAP_TOKEN is empty, so the tap was not updated and `brew install` still serves the previous version."
+            echo "The release itself published fine — only the formula is stale."
+            echo "Most likely: the org secret's visibility excludes public repositories, and this repo is public."
+            echo "Check Settings > Secrets and variables > Actions on the org, and give TAP_TOKEN access to yas-cli."
+            exit 1
           fi
           version="${TAG#v}"
           sha() { grep " yas_${TAG}_$1.tar.gz\$" build/dist/checksums.txt | awk '{print $1}'; }
@@ -128,5 +135,13 @@ jobs:
           git config user.name "yas release"
           git config user.email "noreply@yetanothersandbox.dev"
           git add Formula/yas.rb
-          git commit -m "yas ${TAG}" || { echo "the tap already points at ${TAG}"; exit 0; }
+          if git diff --cached --quiet; then
+            echo "the tap already points at ${TAG}"
+            exit 0
+          fi
+          git commit -m "yas ${TAG}"
+          # No `|| true`. A push refused for want of permission is the same
+          # invisible staleness as an empty token, and the whole point of this
+          # step is that it cannot fail quietly.
           git push
+          echo "the tap now points at ${TAG}"
