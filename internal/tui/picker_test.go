@@ -280,11 +280,17 @@ func TestParkKeyOnlyActsOnAParkableBox(t *testing.T) {
 	}{
 		{1, "idle", "parking api…", true},
 		{3, "suspended", "waking agent-7…", true},
-		{4, "failed", "nothing to park or wake — a-name-that-is-far-too-long-for-the-column is failed", false},
+		// The failed box is HIDDEN until searched for, so this reveals it the
+		// way a person would. Row 1 then, because the offer row is still first.
+		{1, "failed", "nothing to park or wake — a-name-that-is-far-too-long-for-the-column is failed", false},
 		{0, "new box", "", false}, // the offer row has no box to act on
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			m := fixture(t, 120, 40)
+			if finished(tc.status) {
+				m.filter.SetValue("far-too-long")
+				m.sync()
+			}
 			m.list.Select(tc.row)
 			out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 			got := out.(pickerModel)
@@ -370,4 +376,86 @@ func TestPreview(t *testing.T) {
 		t.Logf("\n%s %s · %dx%d %s\n%s", strings.Repeat("=", 6), f.name, f.w, f.h,
 			strings.Repeat("=", 6), m.View())
 	}
+}
+
+// A finished box is not an answer to the question this list asks.
+//
+// The picker exists to choose something to connect to, and a stopped box can be
+// neither connected to nor woken — a resume is refused by name. A schedule
+// firing daily makes one a day, so left in they bury the boxes that work.
+func TestFinishedBoxesAreHiddenUntilSearchedFor(t *testing.T) {
+	m := fixture(t, 120, 40)
+
+	ids := visibleIDs(m)
+	for _, id := range ids {
+		if id == "a-name-that-is-far-too-long-for-the-column" {
+			t.Fatalf("the failed box is in the list by default: %v", ids)
+		}
+	}
+	if m.hidden != 1 {
+		t.Errorf("hidden = %d, want 1 — the count the footer reports", m.hidden)
+	}
+	// And it is SAID, not silently dropped.
+	if !strings.Contains(m.footer(), "1 finished box hidden") {
+		t.Errorf("the footer does not mention the hidden box: %q", m.footer())
+	}
+
+	// Typing a name is an explicit request for it, so a search still finds it —
+	// which is also how it stays deletable from here.
+	m.filter.SetValue("far-too-long")
+	m.sync()
+	found := false
+	for _, id := range visibleIDs(m) {
+		if id == "a-name-that-is-far-too-long-for-the-column" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("searching by name did not reveal the finished box: %v", visibleIDs(m))
+	}
+}
+
+// The boxes that DO work are all still there. A filter that hid one of these
+// would be worse than the noise it removes.
+func TestHidingFinishedBoxesKeepsEveryUsableOne(t *testing.T) {
+	m := fixture(t, 120, 40)
+	want := map[string]bool{newBoxID: false, "api": false, "ledger": false, "agent-7": false}
+	for _, id := range visibleIDs(m) {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected row %q", id)
+		}
+		want[id] = true
+	}
+	for id, seen := range want {
+		if !seen {
+			t.Errorf("%q is missing from the list", id)
+		}
+	}
+}
+
+// `s` offers a wake only where a wake will work. ResumeSandboxFor refuses any
+// status that is not `suspended`, by name, so offering it on a stopped box is
+// offering a refusal.
+func TestOnlyASuspendedBoxIsParked(t *testing.T) {
+	for status, want := range map[string]bool{
+		"suspended": true,
+		"stopped":   false,
+		"failed":    false,
+		"cancelled": false,
+		"idle":      false,
+		"busy":      false,
+		"":          false,
+	} {
+		if got := parked(status); got != want {
+			t.Errorf("parked(%q) = %v, want %v", status, got, want)
+		}
+	}
+}
+
+func visibleIDs(m pickerModel) []string {
+	out := make([]string, 0, len(m.list.Items()))
+	for _, it := range m.list.Items() {
+		out = append(out, it.(boxItem).id)
+	}
+	return out
 }

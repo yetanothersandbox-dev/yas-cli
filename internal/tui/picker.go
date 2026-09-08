@@ -317,6 +317,9 @@ type pickerModel struct {
 
 	width, height int
 	loading       bool
+	// hidden is how many finished boxes sync() left out of the visible list, so
+	// the footer can say so. Recomputed on every sync rather than tracked.
+	hidden int
 	// confirm holds the id `d` is waiting on; y deletes, anything else drops.
 	confirm string
 	note    string
@@ -388,6 +391,7 @@ func (m *pickerModel) sync() {
 	}
 	q := strings.ToLower(strings.TrimSpace(m.filter.Value()))
 	items := make([]list.Item, 0, len(m.all))
+	m.hidden = 0
 	for _, it := range m.all {
 		if it.id == newBoxID {
 			// The offer is always reachable: a filter that matches nothing
@@ -395,9 +399,25 @@ func (m *pickerModel) sync() {
 			items = append(items, it)
 			continue
 		}
-		if q == "" || strings.Contains(strings.ToLower(it.id), q) {
-			items = append(items, it)
+		if q != "" && !strings.Contains(strings.ToLower(it.id), q) {
+			continue
 		}
+		// A finished box is hidden until you go looking for it BY NAME. This
+		// list answers one question — what can I connect to — and a stopped box
+		// is never an answer to it, while a schedule firing daily produces one
+		// a day. Typing a name is an explicit request, so a search still finds
+		// it, and `d` can still delete it once found.
+		//
+		// Deliberately at RENDER time and not in the fetch: the status arrives
+		// after the row does, so the row is built first and drops out when its
+		// status lands. Filtering earlier would mean waiting on every status
+		// before showing anything, which is the slower list this picker exists
+		// to avoid.
+		if q == "" && finished(it.status) {
+			m.hidden++
+			continue
+		}
+		items = append(items, it)
 	}
 	m.list.SetItems(items)
 	for i, it := range items {
@@ -755,6 +775,11 @@ func (m pickerModel) detail() string {
 	if parked(b.status) {
 		s.WriteString(key("↵", "wake it, then a shell") + "\n")
 		s.WriteString(key("s", "wake it") + "\n")
+	} else if finished(b.status) {
+		// No shell, and no wake. Offering either would be offering something
+		// that fails: there is no guest to connect to and a resume is refused
+		// by name. What is left is reading what it did, and removing the row.
+		s.WriteString(dimStyle.Render("  this box has finished — nothing runs in it now") + "\n")
 	} else {
 		s.WriteString(key("↵", "a shell in it") + "\n")
 		if live(b.status) {
@@ -775,6 +800,24 @@ func (m pickerModel) footer() string {
 			faintStyle.Render("↵ keeps it · esc clears it")
 	case m.note != "":
 		return "  " + dimStyle.Render(m.note)
+	case m.hidden > 0:
+		// Said rather than silently dropped: a list that quietly omits rows is
+		// one you cannot trust to be the whole answer. It sits where the note
+		// goes, so it costs no line of its own.
+		//
+		// The hint sheds by MEASURING, like the legend below and for the same
+		// reason: a footer one cell too wide wraps, which pushes the whole list
+		// up a line. Counted against m.width, not guessed at a breakpoint.
+		word := "boxes"
+		if m.hidden == 1 {
+			word = "box"
+		}
+		line := "  " + dimStyle.Render(fmt.Sprintf("%d finished %s hidden", m.hidden, word))
+		hint := " " + faintStyle.Render("· / to search for one by name")
+		if lipgloss.Width(line)+lipgloss.Width(hint) <= m.width {
+			line += hint
+		}
+		return line
 	}
 	// The legend is trimmed by MEASURING it, not by guessing a width at which
 	// it stops fitting. Both guesses were wrong — the full row is 88 cells and

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"github.com/charmbracelet/lipgloss"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -61,7 +63,26 @@ func fetchRows(ctx context.Context, cl *api.Client) ([]boxRow, error) {
 
 // cmdList prints the fleet-shaped truth about this tenant's boxes — which
 // deliberately does not include what machine any of them is on.
+// finished is a box that has run its course: it cannot be resumed, exec'd into
+// or connected to, and the only thing left to do with it is read what it did.
+//
+// `failed` and `cancelled` are here with `stopped` because they are the same
+// answer to the only question this list is asking — can I use this box? The
+// index row stays live either way: a finished record is still readable by id
+// while its host holds it, and an agentic row must stay resolvable whatever its
+// status, or a redelivered dispatch places a second agent (see
+// Registry.reconcileIndex). This is a rendering rule, not a lifecycle one.
+func finished(status string) bool {
+	return status == "stopped" || status == "failed" || status == "cancelled"
+}
+
 func cmdList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	all := fs.Bool("all", false, "include finished boxes, which cannot be used and are normally hidden")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	_, cl, err := loadClient()
 	if err != nil {
 		return err
@@ -111,8 +132,18 @@ func cmdList(args []string) error {
 	// short by exactly the length of its escapes and the table sheared. Widths
 	// come from lipgloss.Width, which counts what the terminal will actually
 	// draw.
+	// Finished boxes are hidden HERE and not in the piped branch above, which
+	// stays byte-identical because scripts parse it. A terminal is the one place
+	// nothing is parsing, and it is also the only place somebody is scanning the
+	// list to decide what to connect to — a box that cannot be connected to is
+	// noise in that decision, and a schedule firing daily produces one a day.
+	hidden := 0
 	cells := [][]string{{"NAME", "STATUS", "AGE", "MEM"}}
 	for _, r := range rows {
+		if finished(r.Status) && !*all {
+			hidden++
+			continue
+		}
 		cells = append(cells, []string{r.ID, statusCell(r.Status), age(r.CreatedAt), memCell(r)})
 	}
 	widths := make([]int, 4)
@@ -137,7 +168,22 @@ func cmdList(args []string) error {
 		}
 		fmt.Fprintln(os.Stdout, b.String())
 	}
+	// Said, rather than silently dropped: a list that quietly omits rows is one
+	// you cannot trust to be the whole answer.
+	if hidden > 0 {
+		fmt.Fprintln(os.Stdout, ui.S(ui.Subtle).Render(fmt.Sprintf(
+			"%s hidden — finished, and holding nothing. %s",
+			plural(hidden, "box", "boxes"), "yas list -all")))
+	}
 	return nil
+}
+
+// plural renders "1 box" and "3 boxes" without the caller thinking about it.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // poolLine is the product's own mental model, on the command people run most.

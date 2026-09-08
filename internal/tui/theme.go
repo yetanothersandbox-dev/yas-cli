@@ -79,12 +79,29 @@ func live(status string) bool {
 	return false
 }
 
+// finished is a box that has run its course: it cannot be woken, connected to
+// or exec'd into, and the only thing left to do with it is read what it did.
+//
+// The complement of parked among the states a box actually reaches, and kept
+// separate from it because they answer different questions: parked asks "can I
+// wake this", finished asks "is there anything here at all". An empty status is
+// neither — it is a Get that has not landed.
+func finished(status string) bool {
+	return status == "stopped" || status == "failed" || status == "cancelled"
+}
+
 // parked is a box that can be woken. NOT the negation of live: `failed` and
 // `cancelled` are neither, and the unknown status a failed Get leaves behind is
 // neither either. Treating "not live" as "parked" offered `s wake it` on a
 // failed box and sent a Resume the gateway was always going to refuse.
+//
+// `stopped` used to be in here and had exactly that bug, one status along: a
+// stopped box cannot be woken — Supervisor.ResumeSandboxFor refuses anything
+// whose status is not `suspended`, by name — so `s` on one showed "waking…"
+// and then the refusal. Suspended is the only state a resume accepts, so it is
+// the only state this returns true for.
 func parked(status string) bool {
-	return status == "suspended" || status == "stopped"
+	return status == "suspended"
 }
 
 // statusWord names a status in a sentence. An empty status is a Get that has
