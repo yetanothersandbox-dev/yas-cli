@@ -3,10 +3,83 @@ package sshutil
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Running the line, without the machine deciding which branch runs.
+//
+// The script branches on `command -v tmux`, so the branch is a fact about the
+// box — and a test that hardcoded `PATH=/usr/bin:/bin` to mean "no tmux" was
+// asserting something about the author's laptop. True on a Mac, where tmux is
+// under /opt/homebrew; false on a GitHub runner, where /usr/bin/tmux exists. So
+// the wrapped branch ran there, tmux said "open terminal failed: not a
+// terminal", and CI was red for five commits while the same test passed
+// locally.
+//
+// Two things make the branch the test's choice instead:
+//
+//   - the PATH is BUILT, holding only the commands the case needs, so tmux is
+//     absent because nothing put one there — or present as a SHIM, which is the
+//     only way to exercise the wrapped branch at all, a real tmux needing a
+//     terminal that `go test` does not have.
+//   - the line is run through `sh -c` rather than the `sh -lc` ssh sends. A
+//     LOGIN shell reads /etc/profile, which on Debian assigns PATH outright, so
+//     everything above would be thrown away before the probe ran. The -l still
+//     gets its check: TestTheJoinedRemoteCommandIsValidShell parses the real
+//     line, untouched, and parsing is what that regression was about.
+
+// pathOf builds a directory holding just the named commands, plus the `sh` the
+// line invokes, and returns it as a PATH. `exec` needs real binaries — it does
+// not fall back to the shell's own builtins — so a case that runs `exec printf`
+// needs a printf reachable under the PATH the case sets.
+func pathOf(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range append([]string{"sh"}, names...) {
+		real, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("this machine has no %s to run the line with: %v", name, err)
+		}
+		if err := os.Symlink(real, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// runLine runs what ssh would send, under one built PATH. See the note above
+// for the -l, which is dropped here and parsed elsewhere.
+func runLine(t *testing.T, path string, remote []string) (string, error) {
+	t.Helper()
+	line := strings.Replace(strings.Join(muxCommand(remote), " "), "sh -lc ", "sh -c ", 1)
+	out, err := exec.Command("bash", "-c", "PATH="+path+"; "+line).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// fakeTmux is a tmux that prints what it was asked to run, one argument per
+// line, instead of opening a session. Everything before `--` is the session
+// holder's own flags; everything after it is the command the caller typed, and
+// that is the part whose quoting this file exists to check.
+const fakeTmux = `#!/bin/sh
+seen=0
+for a in "$@"; do
+  if [ "$seen" = 1 ]; then printf '%s|' "$a"
+  elif [ "$a" = "--" ]; then seen=1
+  fi
+done
+`
+
+func pathWithFakeTmux(t *testing.T) string {
+	t.Helper()
+	dir := pathOf(t)
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(fakeTmux), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // ssh reserves 255 for its own failures and passes everything else through
 // from the remote side. That distinction is the whole basis for saying "the
@@ -128,13 +201,32 @@ func TestTheSessionHolderWrapsAndFallsBack(t *testing.T) {
 // test that matched them was testing the spelling instead of the behaviour.
 // See TestTheJoinedRemoteCommandIsValidShell, which covers this end to end.
 func TestTheSessionHolderQuotesArguments(t *testing.T) {
-	line := strings.Join(muxCommand([]string{"printf", "%s|", "fix the bug", "it's broken"}), " ")
-	out, err := exec.Command("bash", "-c", "PATH=/usr/bin:/bin; "+line).CombinedOutput()
-	if err != nil {
-		t.Fatalf("running the line failed: %v\n%s", err, out)
-	}
-	if got := strings.TrimSpace(string(out)); got != "fix the bug|it's broken|" {
-		t.Errorf("arguments did not survive: %q\nline: %s", got, line)
+	// BOTH branches, because both carry the arguments and the one a guest
+	// actually takes is the wrapped one. The two print different shapes and
+	// that is the point of running each: the fallback EXECUTES printf, so the
+	// output is what printf makes of the words, while the wrapped branch hands
+	// the whole argv to the session holder, so the shim echoes the command name
+	// and its format string too. Either way the two words with a space and an
+	// apostrophe in them arrive as two words.
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{"the fallback, on a box with no tmux", pathOf(t, "printf"),
+			"fix the bug|it's broken|"},
+		{"the session holder, on a box that has one", pathWithFakeTmux(t),
+			"printf|%s||fix the bug|it's broken|"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runLine(t, tc.path, []string{"printf", "%s|", "fix the bug", "it's broken"})
+			if err != nil {
+				t.Fatalf("running the line failed: %v\n%s", err, got)
+			}
+			if got != tc.want {
+				t.Errorf("arguments did not survive: %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -211,13 +303,14 @@ func TestTheJoinedRemoteCommandIsValidShell(t *testing.T) {
 			if tc.want == "" {
 				return
 			}
-			// Then really run it, on a machine with no tmux, so the fallback
-			// branch executes the command with its arguments intact.
-			out, err := exec.Command("bash", "-c", "PATH=/usr/bin:/bin; "+line).CombinedOutput()
+			// Then really run it, under a PATH with no tmux in it, so the
+			// fallback branch executes the command with its arguments intact.
+			// The PATH is built rather than assumed — see pathOf.
+			got, err := runLine(t, pathOf(t, "echo"), tc.remote)
 			if err != nil {
-				t.Fatalf("running the line failed: %v\n%s", err, out)
+				t.Fatalf("running the line failed: %v\n%s", err, got)
 			}
-			if got := strings.TrimSpace(string(out)); got != tc.want {
+			if got != tc.want {
 				t.Errorf("the command received %q, want %q\nline: %s", got, tc.want, line)
 			}
 		})
