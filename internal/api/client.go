@@ -67,6 +67,36 @@ func IsNoCapacity(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusServiceUnavailable
 }
 
+// IsHostTransient reports that the CONTROL PLANE was reached and the host
+// holding the box was not, or answered and then stopped.
+//
+// Kept apart from IsNoCapacity, which is also a 503: that one is the fleet
+// declining to place a box and retrying it is a judgement call. This one is a
+// link that is down between two machines that both exist, and the box on the
+// far side is usually fine — the commonest cause is a deploy restarting fleetd,
+// which severs the interactive relay for a few seconds while the microVMs it
+// was serving are adopted by the new process.
+//
+// Which makes it the one API failure a reconnect loop must ride out rather than
+// report. It is matched on Kind and not on the status code so that a future 503
+// with a different meaning does not silently join it.
+func IsHostTransient(err error) bool {
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.Kind == "host_unreachable" || ae.Kind == "host_silent"
+}
+
+// RetryAfter is what the server asked us to wait, or 0 if it said nothing.
+func RetryAfter(err error) time.Duration {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.RetryAfter
+	}
+	return 0
+}
+
 // IsNotFound reports an id that does not exist for THIS tenant — the API
 // deliberately answers a foreign tenant's id identically.
 func IsNotFound(err error) bool {

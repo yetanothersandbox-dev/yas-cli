@@ -273,7 +273,7 @@ func ConnectWith(ctx context.Context, cl *api.Client, cfg config.Config, id stri
 		if err != nil && isTerminal(os.Stdin) {
 			restoreTerminal(os.Stderr)
 		}
-		if !sshTransportFailed(err) {
+		if !worthReconnecting(err) {
 			return err
 		}
 		// Scripted callers get the error. A retry loop with nobody watching is
@@ -299,10 +299,17 @@ func ConnectWith(ctx context.Context, cl *api.Client, cfg config.Config, id stri
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "\rconnection dropped — reconnecting to %s…\n", id)
+		// A server that named a wait outranks our backoff. It says 5 seconds
+		// while fleetd restarts, and dialling sooner just spends an attempt
+		// from the window on a host that is not listening yet.
+		pause := wait
+		if after := api.RetryAfter(err); after > pause {
+			pause = after
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(wait):
+		case <-time.After(pause):
 		}
 		if wait *= 2; wait > reconnectMax {
 			wait = reconnectMax
@@ -380,6 +387,26 @@ func connectOnce(ctx context.Context, cl *api.Client, cfg config.Config, id stri
 func sshTransportFailed(err error) bool {
 	var ee *exec.ExitError
 	return errors.As(err, &ee) && ee.ExitCode() == 255
+}
+
+// worthReconnecting reports whether this failure is the kind a second attempt
+// fixes.
+//
+// Two shapes reach here, and only one of them used to.
+//
+// ssh exiting 255 is the transport dropping under a live session, which is what
+// the loop was written for. But an attempt can also fail BEFORE ssh starts: the
+// gateway answers 503 host_unreachable because the host is not listening. That
+// is the same outage seen one step earlier — a deploy restarting fleetd severs
+// the relay AND makes the next dial fail — and it arrived as an ordinary API
+// error, so the loop treated it as fatal and printed "could not reach the host
+// holding this sandbox" on the first retry.
+//
+// The effect was that reconnect worked only if the host came back within the
+// single attempt it allowed, i.e. almost never during the restart it exists to
+// cover. Observed live on 2026-09-08, twice, during a fleet deploy.
+func worthReconnecting(err error) bool {
+	return sshTransportFailed(err) || api.IsHostTransient(err)
 }
 
 // explainTransportFailure says what actually happened, when the answer is
