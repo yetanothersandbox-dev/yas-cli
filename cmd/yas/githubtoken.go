@@ -188,8 +188,9 @@ func storeGitHubIntegration(cfg config.Config, attach string) error {
 	fmt.Fprintf(os.Stderr, "  A box reaches GitHub at http://%s.int.yetanothersandbox.dev/ — the whole REST API,\n", githubIntegrationID)
 	fmt.Fprintln(os.Stderr, "  including /search/issues, which the built-in /ghapi route cannot do.")
 	fmt.Fprintln(os.Stderr, "\n  This token now REPLACES the one `yas login` stores, on every box and at every")
-	fmt.Fprintln(os.Stderr, "  door: git clone, git push and the REST API all spend this one. Boxes made")
-	fmt.Fprintln(os.Stderr, "  before now keep what they were built with; make a new box to pick it up.")
+	fmt.Fprintln(os.Stderr, "  door: git clone, git push and the REST API all spend this one. A running box")
+	fmt.Fprintln(os.Stderr, "  keeps what it holds until it next resumes or its host restarts, so new boxes")
+	fmt.Fprintln(os.Stderr, "  pick this up at once and existing ones pick it up when they come back.")
 	fmt.Fprintln(os.Stderr, "  `yas integrations rm github` puts the sign-in token back.")
 	return nil
 }
