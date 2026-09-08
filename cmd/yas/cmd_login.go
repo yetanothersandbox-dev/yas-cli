@@ -24,7 +24,7 @@ func cmdLogin(args []string) error {
 	anthropic := fs.Bool("anthropic", false, "store an Anthropic API key for new boxes (host-side proxy only; never enters a guest)")
 	github := fs.Bool("github", false, "store a GitHub API token for boxes: the whole REST API, taken from the `gh` CLI when it is signed in")
 	attach := fs.String("attach", "", "with -github: where it applies (all, box:<name>, profile:<id>); default keeps the existing attachment, or `all` on a first run")
-	openai := fs.Bool("openai", false, "store an OpenAI key for new boxes")
+	openai := fs.Bool("openai", false, "sign in to ChatGPT in a browser, so the credential renews itself; -key pastes a platform key instead")
 	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
 	device := fs.Bool("device", false, "use the GitHub device flow (for SSH sessions and browserless machines)")
 	force := fs.Bool("force", false, "sign in again even if this machine already holds a working key")
@@ -54,7 +54,7 @@ func cmdLogin(args []string) error {
 		// storeGitHubIntegration.
 		return storeGitHubIntegration(cfg, *attach)
 	case *openai:
-		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
+		return loginOpenAI(cfg, *paste)
 	default:
 		// Already signed in? Then do nothing, and say so.
 		//
@@ -219,6 +219,54 @@ func storeProviderKey(cfg config.Config, prompt, which string) error {
 		return fmt.Errorf("the gateway refused to store it: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, "stored server-side; new boxes get it automatically")
+	return nil
+}
+
+// loginOpenAI stores an OpenAI credential, and prefers the one that keeps
+// working.
+//
+// # Why the browser is the default here
+//
+// A ChatGPT plan is the credential most people with Codex actually have, and it
+// is the one a paste cannot hold: the token it gives you lives hours, so a
+// pasted string stops working the same afternoon and every schedule on it stops
+// with it. The sign-in yields a REFRESH token too, which the gateway keeps and
+// renews — so the credential survives the terminal that created it.
+//
+// A platform key (`sk-…`) has no such problem and no sign-in: it is pasted, as
+// before, behind -key. Both land in the same field; the fleet tells them apart
+// by shape, so nothing downstream has to be told which was used.
+//
+// The browser flow needs a loopback port OpenAI registered, so it cannot work
+// over a bare SSH session. That falls back to the paste rather than failing,
+// with the trade named — a pasted subscription token is better than no
+// credential, for as long as it lasts.
+func loginOpenAI(cfg config.Config, forcePaste bool) error {
+	if cfg.APIKeyResolved() == "" {
+		return errors.New("no API key yet; run `yas login` first — provider keys are stored on your account")
+	}
+	if forcePaste {
+		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
+	}
+
+	tok, err := signInToCodex(context.Background(), osOpenBrowser, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the ChatGPT sign-in did not finish (%v)\n", err)
+		fmt.Fprintln(os.Stderr, "falling back to a pasted key — a platform key (sk-…) never expires;")
+		fmt.Fprintln(os.Stderr, "a pasted ChatGPT token will stop working in a few hours.")
+		return storeProviderKey(cfg, "OpenAI API key: ", "openai")
+	}
+
+	base := cfg.BaseURLResolved()
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	cl := &api.Client{BaseURL: base, Key: cfg.APIKeyResolved()}
+	if err := cl.PutOpenAIOAuth(context.Background(), tok.AccessToken, tok.RefreshToken, tok.ExpiresIn); err != nil {
+		return fmt.Errorf("the gateway refused to store the sign-in: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "✓ Signed in with ChatGPT — stored server-side and renewed for you")
+	fmt.Fprintln(os.Stderr, "  new boxes get it automatically; nothing was written to this machine")
 	return nil
 }
 

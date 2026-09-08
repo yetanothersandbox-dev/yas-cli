@@ -520,6 +520,22 @@ func (c *Client) PutUserCredentials(ctx context.Context, anthropic, openai *stri
 	return c.do(ctx, http.MethodPut, "/v1/user/credentials", body, nil)
 }
 
+// PutOpenAIOAuth hands over a finished ChatGPT sign-in: the access half, the
+// refresh half, and how long the access half has.
+//
+// The refresh token goes to the SERVER on purpose. A fleet run outlives the
+// terminal that signed in — a schedule fires at 03:00 against a token minted
+// yesterday — and the guest cannot renew for itself, because it never sees the
+// credential at all. Keeping the refresh on this laptop would mean unattended
+// work stopping every night until somebody ran this command again.
+func (c *Client) PutOpenAIOAuth(ctx context.Context, access, refresh string, expiresIn int64) error {
+	return c.do(ctx, http.MethodPut, "/v1/user/credentials", map[string]any{
+		"openaiKey":          access,
+		"openaiRefreshToken": refresh,
+		"openaiExpiresIn":    expiresIn,
+	}, nil)
+}
+
 // KeyRow is one listed key. No secret: it is not stored anywhere.
 type KeyRow struct {
 	ID        string     `json:"id"`
