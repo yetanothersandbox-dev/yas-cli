@@ -97,7 +97,7 @@ func usage(w *os.File) {
 	row("yas region", "where your boxes run; latency lives here")
 	row("yas login -anthropic", "store a provider key; a box never sees it")
 	row("yas login -openai", "the same, for OpenAI: a platform key or a ChatGPT plan token")
-	row("yas login -github", "store a GitHub API token; the whole REST API, not just /ghapi")
+	row("yas login -github", "store your own GitHub token; it replaces the sign-in one on every box")
 	row("yas version", "print the version")
 
 	fmt.Fprintln(w, "\n"+head("anything else runs INSIDE a box"))

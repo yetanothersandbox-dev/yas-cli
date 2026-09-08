@@ -15,21 +15,38 @@ import (
 
 // `yas login -github`: a GitHub API token, stored on the account.
 //
-// # Why this is a SECOND GitHub credential and not the one you already have
+// # What storing one REPLACES
 //
-// Signing in with GitHub leaves a token in custody already, and boxes use it —
-// but only through the built-in `/ghapi` route, which is an ALLOWLIST of
-// `/repos/{owner}/{name}/...` paths. There is no search endpoint on it, no
-// `/orgs`, no `/user/repos`. So "list every PR I opened across an org" is not a
-// thing that route can express, whatever token is behind it.
+// Signing in with GitHub already leaves a token in custody, and boxes use it.
+// It is a GitHub APP token, issued to this product's App, so it reaches only
+// repositories that App is installed on — which is an org-admin action nobody
+// may have taken. Your own account's reach is wider than the App's almost
+// everywhere it matters.
 //
-// It is also a GitHub APP token — issued to this product's App, reaching only
-// repositories that App is installed on. Your own account's reach is wider than
-// the App's almost everywhere it matters.
+// This used to be described as a SECOND, wider door, and that was true of the
+// code at the time and was the bug. A box had two GitHub credentials and more
+// than one way to reach GitHub, and which one answered depended on which
+// address the caller happened to use — so `git clone` could fail on an org repo
+// while a hand-rolled request to the same repo succeeded.
 //
-// The integration is the wider door: the whole REST API, at the token's own
-// grant. The two are not interchangeable and neither replaces the other, which
-// is why storing this does not touch the sign-in token.
+// It is one credential per box now, and this is the one that wins. Store a
+// token here and it becomes the account's GitHub credential everywhere: `git
+// clone`, `git push`, the REST API, and every endpoint the host composes. The
+// sign-in token stays in custody — it is the fallback, and it is what a box
+// gets again if you remove this one — but it stops reaching boxes while this
+// exists.
+//
+// Which is worth saying plainly: this is not additional access, it is
+// DIFFERENT access. Prefer a fine-grained token limited to what your boxes
+// need, and `yas integrations rm github` is the rollback.
+//
+// # What the attachment does, and does not do
+//
+// `-attach` still decides where the integration HOSTNAME applies. It does not
+// narrow the credential: a box's stored row records no profile, so honouring an
+// attachment when choosing the credential would mean a box came back from a
+// restart holding a different GitHub identity than it was built with. The
+// account-level rule is what makes the create and the resume agree.
 //
 // # Where the token comes from
 //
@@ -168,9 +185,12 @@ func storeGitHubIntegration(cfg config.Config, attach string) error {
 	}
 	fmt.Fprintf(os.Stderr, "\n✓ GitHub token %s, sealed on your account — applies to %s\n",
 		verb, strings.Join(in.Attach, ", "))
-	fmt.Fprintf(os.Stderr, "  A box reaches it at http://%s.int.yetanothersandbox.dev/ — the whole REST API,\n", githubIntegrationID)
+	fmt.Fprintf(os.Stderr, "  A box reaches GitHub at http://%s.int.yetanothersandbox.dev/ — the whole REST API,\n", githubIntegrationID)
 	fmt.Fprintln(os.Stderr, "  including /search/issues, which the built-in /ghapi route cannot do.")
-	fmt.Fprintln(os.Stderr, "  This is separate from the token `yas login` stores; neither replaces the other.")
+	fmt.Fprintln(os.Stderr, "\n  This token now REPLACES the one `yas login` stores, on every box and at every")
+	fmt.Fprintln(os.Stderr, "  door: git clone, git push and the REST API all spend this one. Boxes made")
+	fmt.Fprintln(os.Stderr, "  before now keep what they were built with; make a new box to pick it up.")
+	fmt.Fprintln(os.Stderr, "  `yas integrations rm github` puts the sign-in token back.")
 	return nil
 }
 

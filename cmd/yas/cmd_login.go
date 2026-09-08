@@ -46,11 +46,10 @@ func cmdLogin(args []string) error {
 		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
 	case *github:
 		// NOT the same credential the GitHub sign-in leaves in custody, and
-		// this used to refuse on the grounds that it was. That refusal was
-		// written before integrations existed and was only ever half true: the
-		// sign-in token serves the built-in /ghapi route, which is an allowlist
-		// of /repos/{owner}/{name}/... paths with no search on it, and it is a
-		// GitHub APP token reaching only what that App is installed on. See
+		// this used to refuse on the grounds that it was. The sign-in token is
+		// a GitHub APP token, reaching only what that App is installed on;
+		// this is the account's own, and storing it REPLACES the sign-in token
+		// on every box rather than sitting beside it. See
 		// storeGitHubIntegration.
 		return storeGitHubIntegration(cfg, *attach)
 	case *openai:
