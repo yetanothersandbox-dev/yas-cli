@@ -122,15 +122,19 @@ func TestTheSessionHolderWrapsAndFallsBack(t *testing.T) {
 	}
 }
 
-// Arguments survive the trip through two shells. `yas claude "fix the bug"`
-// must not become three arguments on the far side.
+// Arguments survive the trip. Asserted by RUNNING the line rather than by
+// matching the quoting, because the quoting is now nested — the script is
+// single-quoted as a whole for ssh, so the inner quotes are escaped and any
+// test that matched them was testing the spelling instead of the behaviour.
+// See TestTheJoinedRemoteCommandIsValidShell, which covers this end to end.
 func TestTheSessionHolderQuotesArguments(t *testing.T) {
-	got := strings.Join(muxCommand([]string{"claude", "fix the bug", "it's broken"}), " ")
-	if !strings.Contains(got, `'fix the bug'`) {
-		t.Errorf("a spaced argument was not quoted: %q", got)
+	line := strings.Join(muxCommand([]string{"printf", "%s|", "fix the bug", "it's broken"}), " ")
+	out, err := exec.Command("bash", "-c", "PATH=/usr/bin:/bin; "+line).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the line failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(got, `'it'\''s broken'`) {
-		t.Errorf("a quoted argument was not escaped: %q", got)
+	if got := strings.TrimSpace(string(out)); got != "fix the bug|it's broken|" {
+		t.Errorf("arguments did not survive: %q\nline: %s", got, line)
 	}
 }
 
@@ -169,5 +173,53 @@ func TestTheReconnectBackoffIsBoundedAndClimbs(t *testing.T) {
 	// during exactly the outage it exists for.
 	if reconnectWindow < 60*time.Second {
 		t.Errorf("the reconnect window is %v, too short to outlast a deploy", reconnectWindow)
+	}
+}
+
+// THE test the first version of this needed and did not have.
+//
+// ssh does not take an argv. It joins everything after the host with spaces and
+// hands the result to the remote login shell as ONE string to parse. So the
+// thing that must be valid shell is not the script — it is the joined line.
+// Testing the script by running it passes while the joined line is a syntax
+// error, which is exactly what shipped: `yas claude` died with
+//
+//	bash: -c: line 1: syntax error near unexpected token `then'
+//
+// This runs the joined line through a real shell, which is the only check that
+// would have caught it.
+func TestTheJoinedRemoteCommandIsValidShell(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remote []string
+		want   string
+	}{
+		{"a bare shell", nil, ""},
+		{"a command", []string{"echo", "hello"}, "hello"},
+		{"a command with spaces", []string{"echo", "fix the bug"}, "fix the bug"},
+		{"a command with quotes", []string{"echo", "it's broken"}, "it's broken"},
+		{"a command with a flag", []string{"echo", "--dangerously-skip-permissions"}, "--dangerously-skip-permissions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exactly what ssh sends: the argv after the host, joined by spaces.
+			line := strings.Join(muxCommand(tc.remote), " ")
+
+			// Parse-only first, so a syntax error is reported as one.
+			if out, err := exec.Command("bash", "-n", "-c", line).CombinedOutput(); err != nil {
+				t.Fatalf("the line ssh sends is not valid shell: %v\n%s\nline: %s", err, out, line)
+			}
+			if tc.want == "" {
+				return
+			}
+			// Then really run it, on a machine with no tmux, so the fallback
+			// branch executes the command with its arguments intact.
+			out, err := exec.Command("bash", "-c", "PATH=/usr/bin:/bin; "+line).CombinedOutput()
+			if err != nil {
+				t.Fatalf("running the line failed: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Errorf("the command received %q, want %q\nline: %s", got, tc.want, line)
+			}
+		})
 	}
 }

@@ -197,8 +197,20 @@ func muxCommand(remoteCmd []string) []string {
 	if len(remoteCmd) > 0 {
 		fallback = "exec " + shellJoin(remoteCmd)
 	}
-	return []string{"sh", "-lc",
-		"if command -v tmux >/dev/null 2>&1; then " + inner + "; else " + fallback + "; fi"}
+	script := "if command -v tmux >/dev/null 2>&1; then " + inner + "; else " + fallback + "; fi"
+	// QUOTED, because ssh does not take an argv.
+	//
+	// ssh joins everything after the host with SPACES and hands the result to
+	// the remote login shell as one string to parse. So returning the script as
+	// its own argv word is not enough: it arrives as `sh -lc if command -v
+	// tmux ...`, the shell parses the words itself, and bash stops at the first
+	// `then` with a syntax error. That shipped and broke `yas claude` — the
+	// script was tested by running it, which is the wrong boundary; what needed
+	// testing was the string ssh actually sends.
+	//
+	// Args passes remote words through verbatim on purpose (a passthrough's own
+	// flags must not be mangled), so the quoting belongs here rather than there.
+	return []string{"sh", "-lc", shellQuote(script)}
 }
 
 // shellJoin quotes each word so the remote shell sees the argv the caller meant,
