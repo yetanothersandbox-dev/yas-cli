@@ -71,8 +71,9 @@ const (
 	// pane is taller than its own column and the footer falls off the frame.
 	detailMinH = 12
 	// poolMin and markMin are the heights that buy the pool bar and the full
-	// three-line mark.
-	poolMin = 20
+	// three-line mark. poolMin counts the FOUR rows poolBlock draws — see the
+	// blank line it keeps between the bar and its legend.
+	poolMin = 21
 	markMin = 13
 )
 
@@ -449,7 +450,7 @@ func (m pickerModel) chrome() int {
 		n++
 	}
 	if m.height >= poolMin {
-		n += 3 // blank, bar, legend
+		n += 4 // blank, bar, blank, legend
 	}
 	return n
 }
@@ -699,9 +700,15 @@ func (m pickerModel) poolBlock() string {
 	if bar == "" {
 		// No pool, or no room for one. Hold the rows open rather than an
 		// apology: a bar that has not arrived is not news.
-		return "\n\n"
+		return "\n\n\n"
 	}
-	return "\n  " + bar + "\n  " + legend
+	// A blank row between the bar and its legend, and it is worth a whole line
+	// of a small terminal. A run of full-height blocks fills its cell edge to
+	// edge, so a line of text on the row underneath is touching the picture
+	// rather than captioning it — the one place in this program where two
+	// different things are drawn with no air between them at all. Every other
+	// pair of rows here is a list of like things, where tight IS the reading.
+	return "\n  " + bar + "\n\n  " + legend
 }
 
 // detail is the right-hand pane: what the selected row cannot fit, and the two

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yetanothersandbox-dev/yas-cli/internal/api"
+	"github.com/yetanothersandbox-dev/yas-cli/internal/ui"
 )
 
 // A picker frame, without a gateway.
@@ -458,4 +459,39 @@ func visibleIDs(m pickerModel) []string {
 		out = append(out, it.(boxItem).id)
 	}
 	return out
+}
+
+// The legend is not allowed to touch the bar.
+//
+// A row of full-height blocks fills its cell top to bottom, so text on the row
+// directly under it reads as part of the picture instead of as its caption —
+// the report that started this said the line was "very close". The blank row
+// between them is the fix, and it is only safe if chrome() is spending it too:
+// a block that draws four rows while the layout budgets three pushes the footer
+// off the bottom of the frame, which is what TestFrameFillsItsHeight would
+// then catch at every size. Both are asserted here, including the frame with no
+// pool at all, which must hold the same rows open.
+func TestTheLegendSitsAWholeRowUnderTheBar(t *testing.T) {
+	m := fixture(t, 120, 40)
+	lines := strings.Split(m.poolBlock(), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("the pool block drew %d rows, want 4: %q", len(lines), lines)
+	}
+	if strings.TrimSpace(lines[2]) != "" {
+		t.Errorf("row 2 is %q, want a blank row between the bar and its legend", lines[2])
+	}
+	if !strings.Contains(lines[1], ui.Solid) {
+		t.Errorf("row 1 is %q, want the bar", lines[1])
+	}
+	if !strings.Contains(lines[3], "GiB") {
+		t.Errorf("row 3 is %q, want the legend", lines[3])
+	}
+
+	// No pool endpoint, no bar — and the same four rows, or the list and the
+	// footer move the moment /v1/pool answers.
+	none := m
+	none.pool = nil
+	if got := len(strings.Split(none.poolBlock(), "\n")); got != len(lines) {
+		t.Errorf("without a pool the block is %d rows, want %d", got, len(lines))
+	}
 }
