@@ -9,7 +9,9 @@ package sshutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,7 +186,107 @@ func Connect(ctx context.Context, cl *api.Client, cfg config.Config, id string, 
 	}
 	cmd := exec.Command("ssh", Args(self, identity, khPath, access, remoteCmd)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	err = cmd.Run()
+
+	// A remote program that died without tidying up leaves this terminal in
+	// whatever modes it set. Mouse reporting is the one that is unmistakable:
+	// every later mouse movement arrives at the shell as `35;102;25M…` instead
+	// of moving a cursor, and it does not stop until something resets it.
+	//
+	// Only after an ABNORMAL exit, and only when stdin was a terminal — a
+	// remote program that exited cleanly restored its own modes, and a piped
+	// session has none to restore.
+	if err != nil && isTerminal(os.Stdin) {
+		restoreTerminal(os.Stderr)
+	}
+	// 255 is ssh's own: the transport failed rather than the remote command
+	// exiting non-zero. Worth explaining, because the commonest cause is a
+	// deploy — the relay lives in the host daemon, so a restart takes every
+	// shell with it while the box itself carries on untouched. See
+	// explainTransportFailure.
+	if sshTransportFailed(err) {
+		explainTransportFailure(ctx, cl, id)
+	}
+	return err
+}
+
+// sshTransportFailed reports whether ssh itself gave up, as opposed to the
+// remote command exiting non-zero.
+//
+// ssh reserves 255 for its own failures and passes anything else through from
+// the remote side, which is what makes this distinguishable at all: `yas claude`
+// whose agent exits 1 must not be told the host restarted.
+func sshTransportFailed(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 255
+}
+
+// explainTransportFailure says what actually happened, when the answer is
+// knowable.
+//
+// ssh reports what it saw — "closed by remote host", a broken pipe — and that
+// reads like the box died. Usually it did not: the interactive relay is served
+// by the host daemon (fleetd's ssh-stream route), so a deploy restarting that
+// daemon severs every shell while the microVMs it was serving are adopted by
+// the new process and carry on. The box is fine and the work inside the shell
+// is not, which is a distinction worth drawing for somebody who has just lost
+// a session.
+//
+// Best effort throughout. This runs after a failure and must not add one: any
+// error asking the gateway leaves ssh's own message as the last word.
+func explainTransportFailure(ctx context.Context, cl *api.Client, id string) {
+	sb, err := cl.Get(ctx, id)
+	if err != nil {
+		return
+	}
+	switch sb.Status {
+	case "idle", "busy":
+		fmt.Fprintf(os.Stderr, "\n%s is still running — the connection dropped, not the box.\n", id)
+		fmt.Fprintf(os.Stderr, "Its filesystem is untouched. `yas ssh %s` opens a new shell in it.\n", id)
+		fmt.Fprintln(os.Stderr, "A host deploy does this: the relay your shell runs through is restarted "+
+			"and the box is handed to the new one. Anything that was running IN the shell is gone.")
+	case "suspended":
+		fmt.Fprintf(os.Stderr, "\n%s parked itself. `yas ssh %s` wakes it and opens a shell.\n", id, id)
+	case "stopped", "failed", "cancelled":
+		fmt.Fprintf(os.Stderr, "\n%s is %s — the box itself ended.\n", id, sb.Status)
+	}
+}
+
+// restoreTerminal undoes the modes an interactive remote program may have left
+// on: mouse reporting in all three encodings, bracketed paste, and a hidden
+// cursor.
+//
+// Written out rather than shelled to `tput reset`, which also clears the
+// scrollback — and the scrollback after a dropped session is the only copy of
+// what was on screen when it went.
+func restoreTerminal(w *os.File) {
+	if !isTerminal(w) {
+		return
+	}
+	writeRestore(w)
+}
+
+// writeRestore is the sequences themselves, separated so a test can read them
+// without a terminal to write to.
+//
+// Note what is NOT here: no clear-screen, no `\x1bc` full reset, no `tput
+// reset`. After a dropped session the scrollback is the only copy of what was
+// on screen when it went, and every one of those would erase it.
+func writeRestore(w io.Writer) {
+	const (
+		mouseOff   = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
+		pasteOff   = "\x1b[?2004l"
+		cursorOn   = "\x1b[?25h"
+		keypadNorm = "\x1b[?1l\x1b>"
+	)
+	fmt.Fprint(w, mouseOff+pasteOff+cursorOn+keypadNorm)
+}
+
+// isTerminal reports whether f is a character device, which is the cheapest
+// question that distinguishes a terminal from a pipe or a file.
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 const (
