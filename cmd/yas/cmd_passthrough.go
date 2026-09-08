@@ -45,7 +45,21 @@ func cmdPassthrough(args []string) error {
 			return err
 		}
 	}
-	return remapExit(sshutil.Connect(ctx, cl, cfg, boxID, remote))
+	// The session holder and the reconnect are for a HUMAN at a terminal, and
+	// only there.
+	//
+	// A scripted passthrough must stay exactly as it was: remapExit hands the
+	// caller the remote command's exit code, and tmux does not propagate one —
+	// an attach returns 0 whatever happened inside. Wrapping a script would
+	// turn every failure into a success. Reconnecting is wrong there too: with
+	// nobody watching, a retry loop is a hang.
+	//
+	// The cost, stated: an interactive `yas claude` now exits with tmux's
+	// status rather than the agent's. For a session somebody is sitting in
+	// front of, that is a fair trade for the session surviving.
+	interactive := cliio.IsTTY(os.Stdin) && cliio.IsTTY(os.Stdout)
+	return remapExit(sshutil.ConnectWith(ctx, cl, cfg, boxID, remote,
+		sshutil.Options{Mux: interactive, Reconnect: interactive}))
 }
 
 // providerForCommand is which provider a box has to be for, to run this command.

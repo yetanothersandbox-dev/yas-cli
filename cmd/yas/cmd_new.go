@@ -88,7 +88,8 @@ func cmdNew(args []string) error {
 		fmt.Println(id)
 		return nil
 	}
-	return sshutil.Connect(context.Background(), cl, cfg, id, nil)
+	return sshutil.ConnectWith(context.Background(), cl, cfg, id, nil,
+		sshutil.Options{Mux: true, Reconnect: true})
 }
 
 // reconcileName resolves the box name from the -name flag and the positional

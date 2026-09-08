@@ -133,10 +133,174 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// The session holder, inside the guest.
+//
+// # Why the shell has to live somewhere other than the connection
+//
+// When a connection breaks, the guest's sshd sees EOF and SIGHUPs the session
+// leader — so the shell and everything under it die INSIDE the guest, where no
+// amount of reconnecting can reach them. That is why `nohup`, `disown` and
+// terminal multiplexers exist at all, and it is why no change to the transport
+// can fix this on its own: a deploy is only one of the ways a connection ends,
+// and closing a laptop is a commoner one.
+//
+// So the durable end moves into the guest. tmux owns the PTY, the shell belongs
+// to tmux's server process, and an SSH session is only a viewport onto it. The
+// connection can die however it likes; the work does not.
+//
+// This is the same conclusion exe.dev reached from the other direction: their
+// VMs answer SSH on a routable address with nothing in the path to redeploy,
+// and they STILL run a per-shell session manager, because the front door does
+// not stop sshd hanging up on the shell behind it.
+//
+// # Why tmux and not something smaller
+//
+// abduco and dtach do session persistence with no keybindings and no status
+// bar, which is a better fit for wrapping an agent — nothing sits between the
+// user and the tool. What they do not do is REPLAY. tmux redraws its own
+// scrollback on attach, so reconnecting shows what was on screen when the
+// connection went; the alternatives show a blank terminal until the program
+// happens to repaint. After an unexpected drop that difference is the whole
+// point, so the keybinding surface is bought back with the baked config: no
+// status bar, no mouse capture, and a prefix nothing collides with. Swapping to
+// abduco is this line and one bake.
+const (
+	// muxSession is the one session per box. Whatever you were doing is what
+	// you come back to, which is the behaviour somebody reconnecting wants.
+	muxSession = "yas"
+	// muxConf is baked beside sshd_config; see images/files/tmux.conf in the
+	// server repository for what it turns off and why.
+	muxConf = "/etc/yas/tmux.conf"
+)
+
+// muxCommand wraps a remote command so it runs inside the session holder, or
+// returns it unchanged when the box has no tmux.
+//
+// The probe is a shell test rather than a capability negotiated over the API,
+// because a box cloned from a golden baked before tmux existed simply has no
+// tmux and never will — a binary cannot be delivered to a running guest the way
+// authorized_keys can. Those boxes get exactly today's behaviour, silently, and
+// converge as they are recreated.
+//
+// `new-session -A` is attach-or-create: reconnecting lands in the session that
+// is already there, and its command argument is ignored when one exists — which
+// is what makes this a reattach rather than a second copy of the agent.
+func muxCommand(remoteCmd []string) []string {
+	inner := "exec tmux -f " + shellQuote(muxConf) + " new-session -A -s " + muxSession
+	if len(remoteCmd) > 0 {
+		inner += " -- " + shellJoin(remoteCmd)
+	}
+	// ${SHELL:-/bin/bash}: a non-login ssh command may carry no SHELL at all,
+	// and landing somebody in a shell that does not exist is worse than not
+	// wrapping.
+	fallback := `exec "${SHELL:-/bin/bash}" -l`
+	if len(remoteCmd) > 0 {
+		fallback = "exec " + shellJoin(remoteCmd)
+	}
+	return []string{"sh", "-lc",
+		"if command -v tmux >/dev/null 2>&1; then " + inner + "; else " + fallback + "; fi"}
+}
+
+// shellJoin quotes each word so the remote shell sees the argv the caller meant,
+// spaces and quotes included.
+func shellJoin(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = shellQuote(a)
+	}
+	return strings.Join(out, " ")
+}
+
+// Options are the connect path's choices. The zero value is the old behaviour:
+// no session holder, no reconnect.
+type Options struct {
+	// Mux runs the session inside the guest's session holder, so it survives
+	// the connection. Only ever set for an interactive session — see
+	// muxCommand, and see Connect for why a scripted one must not be wrapped.
+	Mux bool
+	// Reconnect re-dials when ssh's own transport fails, rather than returning
+	// to a shell prompt.
+	Reconnect bool
+}
+
+// reconnect bounds. A drop is usually a deploy or a laptop changing networks,
+// and both resolve in seconds to tens of seconds; past the window it is more
+// honest to hand the terminal back than to sit there.
+const (
+	reconnectWindow = 90 * time.Second
+	reconnectFirst  = 1 * time.Second
+	reconnectMax    = 5 * time.Second
+	// A session that lasted this long before dropping is a fresh outage rather
+	// than a failing retry, so the backoff starts over. Without this a box that
+	// drops twice an hour would inherit the previous outage's five seconds.
+	reconnectSettled = 30 * time.Second
+)
+
 // Connect is the whole connect path: resume if suspended, install keys, pin
 // the host key, exec ssh with the caller's terminal. A remote command's exit
 // code comes back as an *exec.ExitError.
 func Connect(ctx context.Context, cl *api.Client, cfg config.Config, id string, remoteCmd []string) error {
+	return ConnectWith(ctx, cl, cfg, id, remoteCmd, Options{})
+}
+
+// ConnectWith is Connect with the session holder and the reconnect loop.
+//
+// The loop lives HERE and not in the ProxyCommand (cmd/yas/stdio.go), and that
+// file's own comment says why: re-dialling underneath a live ssh transport
+// hands ssh a new stream it has no reason to trust. A reconnect has to be a new
+// ssh session, which means going round the whole path again — including
+// re-authorizing the key, because a box that resumed from a rootfs suspend has
+// lost the authorized_keys file that lived in tmpfs.
+func ConnectWith(ctx context.Context, cl *api.Client, cfg config.Config, id string, remoteCmd []string, opt Options) error {
+	started := time.Now()
+	wait := reconnectFirst
+	for {
+		attemptAt := time.Now()
+		err := connectOnce(ctx, cl, cfg, id, remoteCmd, opt)
+
+		if err != nil && isTerminal(os.Stdin) {
+			restoreTerminal(os.Stderr)
+		}
+		if !sshTransportFailed(err) {
+			return err
+		}
+		// Scripted callers get the error. A retry loop with nobody watching is
+		// a hang, and the exit code is what a script is reading.
+		if !opt.Reconnect || !isTerminal(os.Stdin) {
+			explainTransportFailure(ctx, cl, id)
+			return err
+		}
+		// A box that has actually ended is not worth re-dialling.
+		if sb, gerr := cl.Get(ctx, id); gerr == nil {
+			switch sb.Status {
+			case "stopped", "failed", "cancelled":
+				explainTransportFailure(ctx, cl, id)
+				return err
+			}
+		}
+		if time.Since(attemptAt) > reconnectSettled {
+			started, wait = time.Now(), reconnectFirst
+		}
+		if time.Since(started) > reconnectWindow {
+			fmt.Fprintf(os.Stderr, "\ngave up reconnecting to %s after %s.\n", id, reconnectWindow)
+			explainTransportFailure(ctx, cl, id)
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "\rconnection dropped — reconnecting to %s…\n", id)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		if wait *= 2; wait > reconnectMax {
+			wait = reconnectMax
+		}
+	}
+}
+
+// connectOnce is one whole attempt: everything from asking the gateway where
+// the box is to ssh exiting.
+func connectOnce(ctx context.Context, cl *api.Client, cfg config.Config, id string, remoteCmd []string, opt Options) error {
 	sb, err := cl.Get(ctx, id)
 	if err != nil {
 		return err
@@ -184,30 +348,15 @@ func Connect(ctx context.Context, cl *api.Client, cfg config.Config, id string, 
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("ssh", Args(self, identity, khPath, access, remoteCmd)...)
+	// The session holder goes on LAST, wrapping whatever was asked for, so the
+	// argv ssh is handed is the one the guest will actually run.
+	run := remoteCmd
+	if opt.Mux {
+		run = muxCommand(remoteCmd)
+	}
+	cmd := exec.Command("ssh", Args(self, identity, khPath, access, run)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Run()
-
-	// A remote program that died without tidying up leaves this terminal in
-	// whatever modes it set. Mouse reporting is the one that is unmistakable:
-	// every later mouse movement arrives at the shell as `35;102;25M…` instead
-	// of moving a cursor, and it does not stop until something resets it.
-	//
-	// Only after an ABNORMAL exit, and only when stdin was a terminal — a
-	// remote program that exited cleanly restored its own modes, and a piped
-	// session has none to restore.
-	if err != nil && isTerminal(os.Stdin) {
-		restoreTerminal(os.Stderr)
-	}
-	// 255 is ssh's own: the transport failed rather than the remote command
-	// exiting non-zero. Worth explaining, because the commonest cause is a
-	// deploy — the relay lives in the host daemon, so a restart takes every
-	// shell with it while the box itself carries on untouched. See
-	// explainTransportFailure.
-	if sshTransportFailed(err) {
-		explainTransportFailure(ctx, cl, id)
-	}
-	return err
+	return cmd.Run()
 }
 
 // sshTransportFailed reports whether ssh itself gave up, as opposed to the

@@ -31,7 +31,8 @@ func cmdPicker() error {
 	if err != nil {
 		return err
 	}
-	return remapExit(sshutil.Connect(context.Background(), cl, cfg, id, nil))
+	return remapExit(sshutil.ConnectWith(context.Background(), cl, cfg, id, nil,
+		sshutil.Options{Mux: true, Reconnect: true}))
 }
 
 // pickBox runs the picker (and, on "new box", the create form + the create)

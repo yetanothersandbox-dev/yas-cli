@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ssh reserves 255 for its own failures and passes everything else through
@@ -92,4 +93,81 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// The session holder wraps whatever was asked for, and degrades on a box that
+// has no tmux — a golden baked before it exists cannot be given one, because a
+// binary is not deliverable to a running guest the way authorized_keys is.
+func TestTheSessionHolderWrapsAndFallsBack(t *testing.T) {
+	got := strings.Join(muxCommand(nil), " ")
+	if !strings.Contains(got, "command -v tmux") {
+		t.Error("no probe: a box without tmux would get a command it cannot run")
+	}
+	if !strings.Contains(got, "new-session -A -s "+muxSession) {
+		t.Errorf("not attach-or-create: %q", got)
+	}
+	if !strings.Contains(got, "${SHELL:-/bin/bash}") {
+		t.Error("the fallback assumes SHELL is set; a non-login ssh command may carry none")
+	}
+
+	// With a command, BOTH branches must run it — the wrapped one and the
+	// fallback. A box without tmux running no command at all would be a box
+	// that silently ignored what you asked for.
+	withCmd := strings.Join(muxCommand([]string{"claude", "--flag"}), " ")
+	if strings.Count(withCmd, "claude") != 2 {
+		t.Errorf("the command does not appear in both branches: %q", withCmd)
+	}
+	if strings.Contains(withCmd, "${SHELL") {
+		t.Error("the fallback dropped into a shell instead of running the command")
+	}
+}
+
+// Arguments survive the trip through two shells. `yas claude "fix the bug"`
+// must not become three arguments on the far side.
+func TestTheSessionHolderQuotesArguments(t *testing.T) {
+	got := strings.Join(muxCommand([]string{"claude", "fix the bug", "it's broken"}), " ")
+	if !strings.Contains(got, `'fix the bug'`) {
+		t.Errorf("a spaced argument was not quoted: %q", got)
+	}
+	if !strings.Contains(got, `'it'\''s broken'`) {
+		t.Errorf("a quoted argument was not escaped: %q", got)
+	}
+}
+
+// Options{} is the old behaviour exactly. Anything that has not opted in — a
+// scripted passthrough above all — must be untouched by any of this.
+func TestTheZeroOptionsChangeNothing(t *testing.T) {
+	var o Options
+	if o.Mux || o.Reconnect {
+		t.Fatal("the zero Options is not the old behaviour")
+	}
+}
+
+// The backoff is bounded and climbs. An unbounded one turns a box that is
+// genuinely gone into a terminal that never comes back.
+func TestTheReconnectBackoffIsBoundedAndClimbs(t *testing.T) {
+	wait := reconnectFirst
+	seen := []time.Duration{wait}
+	for i := 0; i < 8; i++ {
+		if wait *= 2; wait > reconnectMax {
+			wait = reconnectMax
+		}
+		seen = append(seen, wait)
+	}
+	if seen[0] >= seen[1] {
+		t.Error("the backoff does not climb")
+	}
+	for _, w := range seen {
+		if w > reconnectMax {
+			t.Errorf("the backoff reached %v, past the %v cap", w, reconnectMax)
+		}
+	}
+	if seen[len(seen)-1] != reconnectMax {
+		t.Errorf("the backoff settled at %v, not the cap", seen[len(seen)-1])
+	}
+	// And the window has to outlast a fleetd restart, or the loop gives up
+	// during exactly the outage it exists for.
+	if reconnectWindow < 60*time.Second {
+		t.Errorf("the reconnect window is %v, too short to outlast a deploy", reconnectWindow)
+	}
 }
