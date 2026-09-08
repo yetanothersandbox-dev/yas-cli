@@ -243,8 +243,13 @@ func explainTransportFailure(ctx context.Context, cl *api.Client, id string) {
 	case "idle", "busy":
 		fmt.Fprintf(os.Stderr, "\n%s is still running — the connection dropped, not the box.\n", id)
 		fmt.Fprintf(os.Stderr, "Its filesystem is untouched. `yas ssh %s` opens a new shell in it.\n", id)
-		fmt.Fprintln(os.Stderr, "A host deploy does this: the relay your shell runs through is restarted "+
-			"and the box is handed to the new one. Anything that was running IN the shell is gone.")
+		// Named as A cause and not THE cause, because from here they are
+		// indistinguishable: a host deploy and a laptop losing its network
+		// both arrive as ssh exiting 255 with the box still healthy. Claiming
+		// the deploy would be wrong roughly whenever somebody shuts a laptop.
+		fmt.Fprintln(os.Stderr, "A host deploy does this — the relay your shell runs through is restarted "+
+			"and the box is handed to the new one — and so does losing your own network. "+
+			"Either way, anything that was running IN the shell is gone.")
 	case "suspended":
 		fmt.Fprintf(os.Stderr, "\n%s parked itself. `yas ssh %s` wakes it and opens a shell.\n", id, id)
 	case "stopped", "failed", "cancelled":
