@@ -121,8 +121,25 @@ func Args(selfPath, identity, knownHosts string, access api.SSHAccess, remoteCmd
 	}
 	args = append(args, access.User+"@"+access.Host)
 	if len(remoteCmd) > 0 {
-		args = append(args, "--")
-		args = append(args, remoteCmd...)
+		// QUOTED, for the same reason muxCommand quotes: ssh takes no argv. It
+		// joins everything after the host with SPACES and hands one string to
+		// the remote login shell, which parses it again.
+		//
+		// Appending the words raw therefore loses every quote the caller wrote.
+		// `yas claude -p "on the homepage, we have a sign in button"` arrived as
+		// `claude -p on the homepage, ...`, so -p took the single word `on` and
+		// the rest became stray arguments. The agent answered the word "on" —
+		// a run that looks like a bad model rather than a mangled command.
+		//
+		// This does NOT mangle a passthrough's own flags, which is what the
+		// verbatim append was protecting: shellQuote round-trips through the
+		// remote shell, so -p arrives as -p. What it protects is the ARGUMENT
+		// BOUNDARIES, which verbatim could not.
+		//
+		// The interactive path already did this, via muxCommand's shellJoin. So
+		// the two halves of the same command disagreed, and only the scripted
+		// one was wrong.
+		args = append(args, "--", shellJoin(remoteCmd))
 	}
 	return args
 }

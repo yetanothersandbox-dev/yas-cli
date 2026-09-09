@@ -1,6 +1,7 @@
 package sshutil
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -39,7 +40,15 @@ func TestArgsPinAndProxyEverything(t *testing.T) {
 	}
 }
 
-func TestArgsRemoteCommandGetsATTYAndVerbatimFlags(t *testing.T) {
+// This used to be TestArgsRemoteCommandGetsATTYAndVerbatimFlags, and it
+// asserted that each remote word appeared as its own argv entry — the SPELLING
+// of a mechanism that was wrong. ssh takes no argv: it joins everything after
+// the host with spaces, so separate entries buy nothing and `-p "hello world"`
+// — this test's own fixture — reached the guest as two arguments.
+//
+// What matters is what the remote shell ends up with, so that is what is
+// asserted now. See remotecmd_test.go for the full argument-boundary table.
+func TestArgsRemoteCommandGetsATTYAndKeepsItsArgumentBoundaries(t *testing.T) {
 	access := api.SSHAccess{User: "fleet", Host: "sandbox-b1"}
 	remote := []string{"claude", "--dangerously-skip-permissions", "-p", "hello world"}
 	args := Args("/bin/yas", "/k", "/kh", access, remote)
@@ -48,16 +57,26 @@ func TestArgsRemoteCommandGetsATTYAndVerbatimFlags(t *testing.T) {
 	if !strings.Contains(joined, "\x00-t\x00") {
 		t.Errorf("a remote command did not request a tty: %v", args)
 	}
-	// The remote command survives verbatim, flags and all, after the `--`.
-	tail := args[len(args)-len(remote):]
-	for i, want := range remote {
-		if tail[i] != want {
-			t.Fatalf("remote argv[%d] = %q, want %q", i, tail[i], want)
-		}
-	}
-	sep := args[len(args)-len(remote)-1]
+	sep := args[len(args)-2]
 	if sep != "--" {
 		t.Fatalf("no -- separator before the remote command (got %q)", sep)
+	}
+
+	// The flags are still passed through unaltered — quoting round-trips, so
+	// `--dangerously-skip-permissions` arrives as itself and not as a word the
+	// remote shell has interpreted.
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+args[len(args)-1]).Output()
+	if err != nil {
+		t.Fatalf("the remote shell could not parse the command: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(got) != len(remote) {
+		t.Fatalf("the remote shell saw %q, want %q", got, remote)
+	}
+	for i := range remote {
+		if got[i] != remote[i] {
+			t.Errorf("remote argv[%d] = %q, want %q", i, got[i], remote[i])
+		}
 	}
 }
 
