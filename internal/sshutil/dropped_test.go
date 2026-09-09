@@ -54,7 +54,10 @@ func pathOf(t *testing.T, names ...string) string {
 // for the -l, which is dropped here and parsed elsewhere.
 func runLine(t *testing.T, path string, remote []string) (string, error) {
 	t.Helper()
-	line := strings.Replace(strings.Join(muxCommand(remote), " "), "sh -lc ", "sh -c ", 1)
+	// THROUGH Args, because Args is what quotes. Joining muxCommand's own words
+	// skipped that step, so a doubly-quoted line could reach a guest and die
+	// there with `fi: not found` while every test here stayed green.
+	line := strings.Replace(remoteLine(t, muxCommand(remote)), "sh -lc ", "sh -c ", 1)
 	out, err := exec.Command("bash", "-c", "PATH="+path+"; "+line).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -196,10 +199,14 @@ func TestTheSessionHolderWrapsAndFallsBack(t *testing.T) {
 }
 
 // Arguments survive the trip. Asserted by RUNNING the line rather than by
-// matching the quoting, because the quoting is now nested — the script is
+// matching the quoting, because the quoting is nested — the script is
 // single-quoted as a whole for ssh, so the inner quotes are escaped and any
 // test that matched them was testing the spelling instead of the behaviour.
-// See TestTheJoinedRemoteCommandIsValidShell, which covers this end to end.
+//
+// Built through Args, which is where the outer quoting happens. Joining
+// muxCommand's own words instead skipped it, and that is how a doubly-quoted
+// line reached a guest and died there with `fi: not found` while this stayed
+// green. See TestTheJoinedRemoteCommandIsValidShell.
 func TestTheSessionHolderQuotesArguments(t *testing.T) {
 	// BOTH branches, because both carry the arguments and the one a guest
 	// actually takes is the wrapped one. The two print different shapes and
@@ -293,8 +300,12 @@ func TestTheJoinedRemoteCommandIsValidShell(t *testing.T) {
 		{"a command with a flag", []string{"echo", "--dangerously-skip-permissions"}, "--dangerously-skip-permissions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Exactly what ssh sends: the argv after the host, joined by spaces.
-			line := strings.Join(muxCommand(tc.remote), " ")
+			// Exactly what ssh sends: the argv after the host, joined by
+			// spaces — and reached THROUGH Args, because Args is what does the
+			// quoting. Joining muxCommand's own output skipped that step, so
+			// this test kept passing while the composed path was doubly quoted
+			// and died on the guest with `fi: not found`.
+			line := remoteLine(t, muxCommand(tc.remote))
 
 			// Parse-only first, so a syntax error is reported as one.
 			if out, err := exec.Command("bash", "-n", "-c", line).CombinedOutput(); err != nil {
