@@ -95,7 +95,7 @@ func cmdList(args []string) error {
 	if len(rows) == 0 {
 		if tty {
 			fmt.Fprintln(os.Stderr, "no boxes — "+ui.S(ui.Accent).Render("yas new")+
-				" makes one. It takes about 400ms; you will spend longer reading this.")
+				" makes one. It takes less than a second; you will spend longer reading this.")
 		} else {
 			fmt.Fprintln(os.Stderr, "no boxes — `yas new` makes one")
 		}

@@ -130,11 +130,16 @@ func (d delegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		if selected {
 			styled = selName.Render(label)
 		}
-		tail := width - lipgloss.Width(prefix) - lipgloss.Width(label) - 12
+		// The hint's own width, plus the two spaces around the dashes and a
+		// cell of slack at the right margin. Measured rather than a constant:
+		// the number used to be spelled out here, so editing the hint moved the
+		// row off the right edge of the terminal.
+		hint := "under a second"
+		tail := width - lipgloss.Width(prefix) - lipgloss.Width(label) - lipgloss.Width(hint) - 5
 		row := prefix + styled
 		if tail > 2 {
 			row += " " + lineStyle.Render(strings.Repeat(ui.Dashed, tail)) +
-				" " + faintStyle.Render("~400ms")
+				" " + faintStyle.Render(hint)
 		}
 		fmt.Fprint(w, row)
 		return
@@ -726,7 +731,7 @@ func (m pickerModel) detail() string {
 		s.WriteString(dimStyle.Render("a real computer you can") + "\n")
 		s.WriteString(dimStyle.Render("throw away, and get back.") + "\n\n")
 		s.WriteString(faintStyle.Render("root · Docker · SSH") + "\n")
-		s.WriteString(faintStyle.Render("booted in about 400ms") + "\n")
+		s.WriteString(faintStyle.Render("boots in under a second") + "\n")
 		s.WriteString(faintStyle.Render("parked, it costs nothing") + "\n\n")
 		s.WriteString(key("↵", "shape it and go"))
 		return s.String()
@@ -964,7 +969,7 @@ func (m pickerModel) emptyState() string {
 
 	msg := "  " + dimStyle.Render("no boxes yet.")
 	if tail := m.width - lipgloss.Width(msg) - 2; tail >= 48 {
-		msg += " " + faintStyle.Render("the first one is a keypress and about 400ms away.")
+		msg += " " + faintStyle.Render("the first one is a keypress and less than a second away.")
 	}
 	if lipgloss.Width(msg) > m.width {
 		msg = "  " + dimStyle.Render(truncate("no boxes yet", max(m.width-2, 0)))

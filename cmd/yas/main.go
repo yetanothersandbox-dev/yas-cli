@@ -72,7 +72,7 @@ func usage(w *os.File) {
 
 	fmt.Fprintln(w, head("start here"))
 	row("yas login", "sign in with GitHub, or paste a key")
-	row("yas new [flags] [name]", "a fresh box, connected in about 400ms")
+	row("yas new [flags] [name]", "a fresh box, connected in under a second")
 	row("yas", "pick a box (or make one) and connect")
 
 	fmt.Fprintln(w, "\n"+head("day to day"))

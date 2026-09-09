@@ -2,7 +2,7 @@
 
 The command-line client for [YetAnotherSandbox](https://yetanothersandbox.dev) —
 Firecracker microVMs on dedicated hardware that you can throw away and get back.
-Root, Docker, SSH. Boots in about 400ms, keeps everything you write to it, and
+Root, Docker, SSH. Boots in less than a second, keeps everything you write to it, and
 costs nothing while stopped.
 
 ## Install
