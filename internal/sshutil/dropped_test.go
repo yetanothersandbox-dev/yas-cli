@@ -57,9 +57,32 @@ func runLine(t *testing.T, path string, remote []string) (string, error) {
 	// THROUGH Args, because Args is what quotes. Joining muxCommand's own words
 	// skipped that step, so a doubly-quoted line could reach a guest and die
 	// there with `fi: not found` while every test here stayed green.
-	line := strings.Replace(remoteLine(t, muxCommand(remote)), "sh -lc ", "sh -c ", 1)
-	out, err := exec.Command("bash", "-c", "PATH="+path+"; "+line).CombinedOutput()
+	out, err := exec.Command("bash", "-c",
+		"PATH="+path+"; "+withoutLogin(t, remoteLine(t, muxCommand(remote)))).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// withoutLogin turns the login shell ssh sends into a plain one, and FAILS if
+// it cannot find it.
+//
+// The failure is the point. This substitution used to be a bare
+// strings.Replace on `sh -lc `, and the day Args started quoting every word the
+// line became `'sh' '-lc' …`: the replace matched nothing, said nothing, and
+// every case quietly went back to running a LOGIN shell — whose /etc/profile
+// assigns PATH outright on Debian, throwing away the PATH each case built and
+// letting the machine pick the branch again. That is the exact bug this file
+// was rewritten to end, arrived at a second time through a change nobody here
+// made. So the forms are named, and an unrecognised one stops the test.
+func withoutLogin(t *testing.T, line string) string {
+	t.Helper()
+	for _, form := range []string{"'sh' '-lc' ", "sh -lc "} {
+		if strings.Contains(line, form) {
+			return strings.Replace(line, form, strings.Replace(form, "-lc", "-c", 1), 1)
+		}
+	}
+	t.Fatalf("no login shell to strip in %q: the quoting changed, and running this line as it "+
+		"stands would let /etc/profile rebuild PATH and choose the tmux branch for us", line)
+	return ""
 }
 
 // fakeTmux is a tmux that prints what it was asked to run, one argument per
