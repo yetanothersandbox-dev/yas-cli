@@ -566,6 +566,21 @@ func (c *Client) PutOpenAIOAuth(ctx context.Context, access, refresh string, exp
 	}, nil)
 }
 
+// PutAnthropicOAuth hands over a finished Claude sign-in: the access half, the
+// refresh half, and how long the access half has.
+//
+// The twin of PutOpenAIOAuth, and it is here for the same reason. A pasted
+// subscription token used to be the only way to hold a Claude plan credential,
+// and it stopped working the same afternoon because a paste carries no refresh
+// token. This one the gateway can renew.
+func (c *Client) PutAnthropicOAuth(ctx context.Context, access, refresh string, expiresIn int64) error {
+	return c.do(ctx, http.MethodPut, "/v1/user/credentials", map[string]any{
+		"anthropicKey":          access,
+		"anthropicRefreshToken": refresh,
+		"anthropicExpiresIn":    expiresIn,
+	}, nil)
+}
+
 // KeyRow is one listed key. No secret: it is not stored anywhere.
 type KeyRow struct {
 	ID        string     `json:"id"`

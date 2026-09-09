@@ -126,6 +126,8 @@ func requireProviderCredential(ctx context.Context, cl *api.Client, cmd string) 
 		"  Run `%s`, then try again.", cmd, vendor, login)
 	if need == "openai" {
 		msg += "\n  It opens a browser to sign in to ChatGPT; `yas login -openai -key` pastes a platform key instead."
+	} else {
+		msg += "\n  It opens a browser to sign in to Claude; `yas login -anthropic -key` pastes a console key instead."
 	}
 	return errors.New(msg)
 }

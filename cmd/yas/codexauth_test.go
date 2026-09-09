@@ -22,7 +22,7 @@ import (
 // callback.
 func TestTheCallbackBindsBothLoopbackFamilies(t *testing.T) {
 	port := freePort(t)
-	lns, err := listenLoopback(port)
+	lns, err := listenLoopback(port, "close the other tool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestTheCallbackBindsBothLoopbackFamilies(t *testing.T) {
 // to say so rather than silently never receiving its callback.
 func TestASecondSignInRefusesTheHeldPort(t *testing.T) {
 	port := freePort(t)
-	first, err := listenLoopback(port)
+	first, err := listenLoopback(port, "close the other tool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestASecondSignInRefusesTheHeldPort(t *testing.T) {
 			_ = l.Close()
 		}
 	}()
-	if _, err := listenLoopback(port); err == nil {
+	if _, err := listenLoopback(port, "close the other tool"); err == nil {
 		t.Fatal("a second bind of the same port succeeded; one of the two would never get its callback")
 	} else if !strings.Contains(err.Error(), "already listening") {
 		t.Errorf("the refusal does not say what to do about it: %v", err)
@@ -82,7 +82,7 @@ func TestASecondSignInRefusesTheHeldPort(t *testing.T) {
 func TestACallbackWithTheWrongStateIsRefused(t *testing.T) {
 	codes := make(chan string, 1)
 	fails := make(chan error, 1)
-	h := codexCallbackHandler("the-real-state", codes, fails)
+	h := callbackHandler(codexCallback, "the-real-state", "yas login -openai", codes, fails)
 
 	rec := doCallback(t, h, url.Values{"state": {"forged"}, "code": {"stolen"}})
 	if rec.code != http.StatusBadRequest {
@@ -103,7 +103,7 @@ func TestACallbackWithTheWrongStateIsRefused(t *testing.T) {
 func TestAGoodCallbackDeliversItsCode(t *testing.T) {
 	codes := make(chan string, 1)
 	fails := make(chan error, 1)
-	h := codexCallbackHandler("s1", codes, fails)
+	h := callbackHandler(codexCallback, "s1", "yas login -openai", codes, fails)
 	rec := doCallback(t, h, url.Values{"state": {"s1"}, "code": {"ok-code"}})
 	if rec.code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.code)
@@ -122,7 +122,7 @@ func TestAGoodCallbackDeliversItsCode(t *testing.T) {
 func TestACancelledSignInIsReportedAtOnce(t *testing.T) {
 	codes := make(chan string, 1)
 	fails := make(chan error, 1)
-	h := codexCallbackHandler("s1", codes, fails)
+	h := callbackHandler(codexCallback, "s1", "yas login -openai", codes, fails)
 	doCallback(t, h, url.Values{
 		"state": {"s1"}, "error": {"access_denied"},
 		"error_description": {"The user declined"},

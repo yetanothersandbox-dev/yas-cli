@@ -95,8 +95,8 @@ func usage(w *os.File) {
 	row("yas integrations", "services a box may reach; the key stays off the box")
 	row("yas defaults", "the size a box gets when you do not say")
 	row("yas region", "where your boxes run; latency lives here")
-	row("yas login -anthropic", "store a provider key; a box never sees it")
-	row("yas login -openai", "the same, for OpenAI: a platform key or a ChatGPT plan token")
+	row("yas login -anthropic", "sign in to Claude in a browser: a console key or a Claude plan")
+	row("yas login -openai", "the same, on OpenAI: a platform key or a ChatGPT plan")
 	row("yas login -github", "store your own GitHub token; it replaces the sign-in one on every box")
 	row("yas version", "print the version")
 

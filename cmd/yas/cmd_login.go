@@ -21,12 +21,13 @@ import (
 // before it is saved, so a typo fails here and not on the first `yas new`.
 func cmdLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	anthropic := fs.Bool("anthropic", false, "store an Anthropic API key for new boxes (host-side proxy only; never enters a guest)")
+	anthropic := fs.Bool("anthropic", false, "sign in to Claude in a browser, so the credential renews itself; -key pastes a console key instead")
 	github := fs.Bool("github", false, "store a GitHub API token for boxes: the whole REST API, taken from the `gh` CLI when it is signed in")
 	attach := fs.String("attach", "", "with -github: where it applies (all, box:<name>, profile:<id>); default keeps the existing attachment, or `all` on a first run")
 	openai := fs.Bool("openai", false, "sign in to ChatGPT in a browser, so the credential renews itself; -key pastes a platform key instead")
 	paste := fs.Bool("key", false, "paste an existing yas_sk_ key instead of signing in with GitHub")
 	device := fs.Bool("device", false, "use the GitHub device flow (for SSH sessions and browserless machines)")
+	manual := fs.Bool("manual", false, "with -anthropic: bring the code back by hand instead of through a loopback port (for SSH sessions)")
 	force := fs.Bool("force", false, "sign in again even if this machine already holds a working key")
 	baseURL := fs.String("url", "", "gateway base URL (default "+api.DefaultBaseURL+")")
 	if err := fs.Parse(args); err != nil {
@@ -43,7 +44,7 @@ func cmdLogin(args []string) error {
 
 	switch {
 	case *anthropic:
-		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
+		return loginAnthropic(cfg, *paste, *manual)
 	case *github:
 		// NOT the same credential the GitHub sign-in leaves in custody, and
 		// this used to refuse on the grounds that it was. The sign-in token is
@@ -267,6 +268,78 @@ func loginOpenAI(cfg config.Config, forcePaste bool) error {
 	fmt.Fprintln(os.Stderr, "✓ Signed in with ChatGPT — stored server-side and renewed for you")
 	fmt.Fprintln(os.Stderr, "  new boxes get it automatically; nothing was written to this machine")
 	return nil
+}
+
+// loginAnthropic stores an Anthropic credential, and prefers the one that keeps
+// working.
+//
+// # Why the browser is the default here
+//
+// The twin of loginOpenAI below, arrived at the same way. A Claude subscription
+// is the credential most people with Claude Code actually have, and it is the
+// one a paste cannot hold: the token it gives you lives hours, so a pasted
+// string stops working the same afternoon and every schedule on it stops with
+// it. The sign-in yields a REFRESH token too, which the gateway keeps and
+// renews — so the credential survives the terminal that created it.
+//
+// A console key (`sk-ant-api03-…`) has no such problem and no sign-in: it is
+// pasted, as before, behind -key. Both land in the same field; the fleet tells
+// them apart by shape (proxy.AnthropicAuthFor), so nothing downstream has to be
+// told which was used.
+//
+// The loopback flow needs a port, so it cannot work over a bare SSH session.
+// That falls back to Anthropic's print-the-code mode rather than to a paste of a
+// credential — a one-time code is worthless without the verifier this process
+// holds — and only a failure THERE falls back to the key.
+func loginAnthropic(cfg config.Config, forcePaste, manual bool) error {
+	if cfg.APIKeyResolved() == "" {
+		return errors.New("no API key yet; run `yas login` first — provider keys are stored on your account")
+	}
+	if forcePaste {
+		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
+	}
+
+	ctx := context.Background()
+	tok, err := claudeSignIn(ctx, manual)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the Claude sign-in did not finish (%v)\n", err)
+		fmt.Fprintln(os.Stderr, "falling back to a pasted key — a console key (sk-ant-api03-…) never expires;")
+		fmt.Fprintln(os.Stderr, "a pasted subscription token will stop working in a few hours.")
+		return storeProviderKey(cfg, "Anthropic API key: ", "anthropic")
+	}
+
+	base := cfg.BaseURLResolved()
+	if base == "" {
+		base = api.DefaultBaseURL
+	}
+	cl := &api.Client{BaseURL: base, Key: cfg.APIKeyResolved()}
+	if err := cl.PutAnthropicOAuth(ctx, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn); err != nil {
+		return fmt.Errorf("the gateway refused to store the sign-in: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "\u2713 Signed in with Claude — stored server-side and renewed for you")
+	fmt.Fprintln(os.Stderr, "  new boxes get it automatically; nothing was written to this machine")
+	return nil
+}
+
+// claudeSignIn picks a way back from the browser.
+//
+// The switch to the printed code happens ONLY when the loopback was never
+// viable — no port, so no redirect can reach this process. That distinction is
+// the whole design of this function: a sign-in that timed out or was cancelled
+// means somebody walked away or said no, and opening a second browser tab at
+// them is not a recovery. Falling forward on a dead port is; falling forward on
+// a human decision is not.
+func claudeSignIn(ctx context.Context, manual bool) (claudeTokens, error) {
+	if manual {
+		return signInToClaudeManual(ctx, osOpenBrowser, os.Stderr, os.Stdin)
+	}
+	tok, err := signInToClaude(ctx, osOpenBrowser, os.Stderr)
+	if !errors.Is(err, errNoLoopback) {
+		return tok, err
+	}
+	fmt.Fprintf(os.Stderr, "no loopback port for the sign-in (%v)\n", err)
+	fmt.Fprintln(os.Stderr, "using the code Claude prints for you instead")
+	return signInToClaudeManual(ctx, osOpenBrowser, os.Stderr, os.Stdin)
 }
 
 // whoami reports the account a stored key belongs to, and whether it still

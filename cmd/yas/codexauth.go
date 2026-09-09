@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,18 +69,17 @@ type codexTokens struct {
 // signInToCodex runs the whole flow: bind the callback, open a browser, wait
 // for the redirect, exchange the code.
 func signInToCodex(ctx context.Context, open func(string), out io.Writer) (codexTokens, error) {
-	verifier, err := randomURLSafe(32)
+	verifier, challenge, err := pkcePair()
 	if err != nil {
 		return codexTokens{}, err
 	}
-	sum := sha256.Sum256([]byte(verifier))
-	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	state, err := randomURLSafe(32)
 	if err != nil {
 		return codexTokens{}, err
 	}
 
-	listeners, err := listenLoopback(codexPort)
+	listeners, err := listenLoopback(codexPort, "close `codex login`, the Codex CLI or "+
+		"another tool using the same sign-in")
 	if err != nil {
 		return codexTokens{}, err
 	}
@@ -96,7 +92,7 @@ func signInToCodex(ctx context.Context, open func(string), out io.Writer) (codex
 	redirect := fmt.Sprintf("http://localhost:%d%s", codexPort, codexCallback)
 	codes := make(chan string, 1)
 	fails := make(chan error, 1)
-	srv := &http.Server{Handler: codexCallbackHandler(state, codes, fails)}
+	srv := &http.Server{Handler: callbackHandler(codexCallback, state, "yas login -openai", codes, fails)}
 	for _, ln := range listeners {
 		go func(l net.Listener) { _ = srv.Serve(l) }(ln)
 	}
@@ -134,105 +130,6 @@ func signInToCodex(ctx context.Context, open func(string), out io.Writer) (codex
 		return codexTokens{}, ctx.Err()
 	}
 	return exchangeCodexCode(ctx, code, verifier, redirect)
-}
-
-// listenLoopback binds the callback port on BOTH address families.
-//
-// # Why this is not just Listen("tcp", "127.0.0.1:1455")
-//
-// The redirect OpenAI registered is `http://localhost:1455/...`, and on macOS
-// `localhost` resolves to ::1 before 127.0.0.1. Binding IPv4 alone means a
-// different process holding IPv6 *:1455 receives the callback instead — and
-// because those are different address families, that does NOT raise
-// EADDRINUSE, so nothing here would notice.
-//
-// That is not hypothetical; talyn shipped the IPv4-only version and another
-// tool using the same Codex OAuth client answered its callback. Anything built
-// on that client collides the same way: `codex login`, the Codex CLI, OpenCode.
-//
-// A SPECIFIC bind beats a wildcard one for routing, which is what takes the
-// callback back from a process holding *:1455. A host with no IPv6 stack is
-// not an error — carry on with IPv4. Failing to bind IPv4 is, because that is
-// the family we can always be reached on.
-func listenLoopback(port int) ([]net.Listener, error) {
-	var out []net.Listener
-	// IPv6 first: if this one is going to fail for a reason worth reporting,
-	// report it before taking the IPv4 socket.
-	if ln, err := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", port)); err == nil {
-		out = append(out, ln)
-	} else if isAddrInUse(err) {
-		return nil, fmt.Errorf("something is already listening on [::1]:%d — "+
-			"close `codex login`, the Codex CLI or another tool using the same sign-in, then try again", port)
-	}
-	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		for _, l := range out {
-			_ = l.Close()
-		}
-		if isAddrInUse(err) {
-			return nil, fmt.Errorf("something is already listening on 127.0.0.1:%d — "+
-				"close `codex login`, the Codex CLI or another tool using the same sign-in, then try again", port)
-		}
-		return nil, fmt.Errorf("could not open the sign-in callback port %d: %w", port, err)
-	}
-	return append(out, ln), nil
-}
-
-func isAddrInUse(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "address already in use")
-}
-
-// codexCallbackHandler answers the redirect and hands the code back.
-func codexCallbackHandler(state string, codes chan<- string, fails chan<- error) http.Handler {
-	var once bool
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != codexCallback {
-			http.NotFound(w, r)
-			return
-		}
-		if once {
-			return
-		}
-		once = true
-		q := r.URL.Query()
-		// The state check is the CSRF guard and it runs before anything else is
-		// believed: without it, any page that can reach this loopback could
-		// feed us an authorization code minted for a different account.
-		if q.Get("state") != state {
-			codexPage(w, http.StatusBadRequest, "That sign-in did not come from this terminal.",
-				"Close this tab and run `yas login -openai` again.")
-			fails <- errors.New("the sign-in came back with a state this terminal did not issue")
-			return
-		}
-		if e := q.Get("error"); e != "" {
-			detail := q.Get("error_description")
-			if detail == "" {
-				detail = e
-			}
-			codexPage(w, http.StatusOK, "Sign-in cancelled.", detail)
-			fails <- fmt.Errorf("openai ended the sign-in: %s", detail)
-			return
-		}
-		code := q.Get("code")
-		if code == "" {
-			codexPage(w, http.StatusBadRequest, "That sign-in came back empty.",
-				"Close this tab and run `yas login -openai` again.")
-			fails <- errors.New("openai returned no authorization code")
-			return
-		}
-		codexPage(w, http.StatusOK, "Signed in.", "You can close this tab and go back to your terminal.")
-		codes <- code
-	})
-}
-
-// codexPage is the one thing the browser ever sees from us. Plain, self-closing
-// text: this window belongs to OpenAI's flow, not to a product surface.
-func codexPage(w http.ResponseWriter, status int, title, detail string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>yas</title>`+
-		`<body style="background:#0d0e10;color:#e8e9ec;font:15px/1.7 ui-monospace,Menlo,monospace;padding:48px">`+
-		`<p><strong>%s</strong></p><p style="color:#9aa0a6">%s</p>`, title, detail)
 }
 
 // exchangeCodexCode turns the authorization code into a token pair. The
@@ -292,12 +189,4 @@ func exchangeCodexCode(ctx context.Context, code, verifier, redirect string) (co
 		RefreshToken: body.RefreshToken,
 		ExpiresIn:    body.ExpiresIn,
 	}, nil
-}
-
-func randomURLSafe(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }
