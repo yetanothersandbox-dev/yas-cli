@@ -35,6 +35,12 @@ type CreateRequest struct {
 	AnthropicKey string `json:"anthropicKey,omitempty"`
 	GitHubToken  string `json:"githubToken,omitempty"`
 	OpenAIKey    string `json:"openaiKey,omitempty"`
+	// McpServers are tool servers named for this box alone. The gateway
+	// consumes the field and turns them into the box's integrations; no host
+	// ever sees it. They MERGE with whatever the account has attached, unlike
+	// every other field here, because the motivating caller is "my usual
+	// servers, plus this one".
+	McpServers []McpServerInline `json:"mcpServers,omitempty"`
 	// Provider is the LLM upstream this box is wired to: "openai", or empty for
 	// Anthropic. Fixed at create and unchangeable afterwards — the credential
 	// proxy's route table is built from it before the guest boots — so it is

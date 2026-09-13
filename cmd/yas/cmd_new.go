@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +39,17 @@ func cmdNew(args []string) error {
 	noCreds := fs.Bool("no-creds", false, "attach no credentials to this box, whatever is stored")
 	profile := fs.String("profile", "", "create from a saved profile: its posture, size and repo, unless a flag here overrides them")
 	provider := fs.String("provider", "", "which LLM this box is for: anthropic (default) or openai. Fixed at create — it decides the box's route table and which agent CLI works in it")
+	// Repeatable. The KEY comes from the environment rather than the command
+	// line, for the reason `integrations add --secret -` exists: a credential
+	// in argv is a credential in the shell history and in the process table.
+	var mcp stringList
+	fs.Var(&mcp, "mcp", "an MCP tool server for this box, as name=url. Repeatable. Its key is read from YAS_MCP_SECRET_<NAME>. Merges with whatever your account has attached")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	inlineMcp, err := parseInlineMcp(mcp, os.Getenv)
+	if err != nil {
 		return err
 	}
 
@@ -80,6 +91,7 @@ func cmdNew(args []string) error {
 		Name: boxName, MemMiB: *mem, MilliVcpu: milliVcpu, DiskMiB: *disk,
 		MaxLifetimeSec: *lifetime, Policy: pol,
 		Profile: *profile, Provider: providerName,
+		McpServers: inlineMcp,
 	})
 	if err != nil {
 		return err
@@ -132,6 +144,21 @@ type createOpts struct {
 	Profile string
 	// Provider is the LLM this box is for: "openai", or empty for Anthropic.
 	Provider string
+	// McpServers are tool servers named for THIS box rather than stored. They
+	// MERGE with whatever the account has attached — the case that matters is
+	// "my usual servers, plus this one" — and a name here shadows a stored one.
+	McpServers []api.McpServerInline
+}
+
+// stringList collects a repeatable flag. flag.Value, because Go's flag package
+// has no repeatable-string type of its own and a comma-separated single flag
+// cannot carry a URL that contains a comma.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }
 
 // parseProvider validates the -provider flag here rather than letting the
@@ -322,6 +349,7 @@ func createBox(ctx context.Context, cl *api.Client, cfg config.Config, o createO
 		AnthropicKey: unlessSuppressed(suppressed, cfg.AnthropicKeyResolved()),
 		GitHubToken:  unlessSuppressed(suppressed, cfg.GitHubTokenResolved()),
 		OpenAIKey:    unlessSuppressed(suppressed, cfg.OpenAIKeyResolved()),
+		McpServers:   o.McpServers,
 	}
 	// The create is synchronous by contract — it returns when the guest is UP —
 	// so the CLI can time it and print the product's own headline number, every

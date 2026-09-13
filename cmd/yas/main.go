@@ -93,6 +93,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "\n"+head("account"))
 	row("yas keys", "API keys for machines that are not you")
 	row("yas integrations", "services a box may reach; the key stays off the box")
+	row("yas mcp", "tool servers your agents can call; the key stays off the box")
 	row("yas defaults", "the size a box gets when you do not say")
 	row("yas region", "where your boxes run; latency lives here")
 	row("yas login -anthropic", "sign in to Claude in a browser: a console key or a Claude plan")
@@ -131,9 +132,14 @@ var verbs = map[string]func([]string) error{
 	"defaults":     cmdDefaults,
 	"integrations": cmdIntegrations,
 	"int":          cmdIntegrations,
-	"region":       cmdRegion,
-	"schedule":     cmdSchedule,
-	"stdio":        cmdStdio,
+	// `mcp` shadows any program of that name inside a box, which is the
+	// compatibility decision this comment is about. Taken deliberately: it is
+	// the word people will reach for, and the reference MCP tooling ships no
+	// binary called `mcp`.
+	"mcp":      cmdMcp,
+	"region":   cmdRegion,
+	"schedule": cmdSchedule,
+	"stdio":    cmdStdio,
 }
 
 func main() {
