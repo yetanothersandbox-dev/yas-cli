@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -176,12 +178,13 @@ func TestMcpConnectedLine(t *testing.T) {
 	}
 }
 
-// THE POLL IS THE WHOLE MECHANISM, so what it does on each answer is pinned.
+// THE POLL IS THE FALLBACK ROAD, so what it does on each answer is pinned.
 //
-// No authorization code reaches this machine, which means there is no listener
-// and nothing else that can learn the flow finished. If this loop stops reading
-// one of these words correctly, `yas mcp connect` hangs for three minutes on a
-// sign-in that worked.
+// The listener beside it catches the ordinary sign-in. This loop is what ends
+// the wait on an ending the listener never sees — an expired link, a consent
+// finished somewhere this port cannot be knocked on — and it carries the blip
+// tolerance. If it stops reading one of these words correctly, `yas mcp
+// connect` holds a terminal for three minutes over a flow that is already over.
 func TestAwaitMcpConnect(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -274,6 +277,138 @@ func TestAwaitMcpConnectGivesUp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "yas mcp list") {
 		t.Errorf("the refusal does not say where to look: %v", err)
+	}
+}
+
+// THE REDIRECT URI IS TWO THINGS AT ONCE: what the gateway validates and
+// stores, and where this process is actually listening. This pins both halves.
+//
+// The first half is validateLoopbackRedirect's rules, spelled out here so a
+// change to this URI fails in this repo rather than as a 400 somebody reads in
+// a terminal. The second is the one that is easy to get wrong silently: a path
+// that does not match the handler's is a 404 the browser shows and the code is
+// lost with the flow already spent.
+func TestMcpLoopbackRedirect(t *testing.T) {
+	raw := mcpLoopbackRedirect(mcpLoopbackPort)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("%q is not a URL: %v", raw, err)
+	}
+	if u.Scheme != "http" {
+		// http and never https: loopback is the one place plaintext is correct
+		// (RFC 8252 §7.3), and nobody can issue a certificate for this name.
+		t.Errorf("scheme = %q, want http", u.Scheme)
+	}
+	if u.Hostname() != "127.0.0.1" {
+		// A literal address, not `localhost`: the gateway compares three exact
+		// strings and resolves nothing.
+		t.Errorf("host = %q, want 127.0.0.1", u.Hostname())
+	}
+	if u.Port() != strconv.Itoa(mcpLoopbackPort) {
+		t.Errorf("port = %q, want %d", u.Port(), mcpLoopbackPort)
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		// The vendor appends ?code=&state= to this URI. Anything already on it
+		// makes what arrives ambiguous, and the gateway refuses it outright.
+		t.Errorf("%q carries userinfo, a query or a fragment", raw)
+	}
+	// Distinct from the other FIXED port this CLI binds, or the two sign-ins
+	// take each other's callbacks and neither reports a thing. The Claude flow
+	// is not compared because it has no number of its own: it asks the kernel
+	// for one, and a kernel does not hand out a port somebody is holding.
+	if mcpLoopbackPort == codexPort {
+		t.Errorf("port %d is the one `yas login -openai` binds", mcpLoopbackPort)
+	}
+
+	codes := make(chan string, 1)
+	fails := make(chan error, 1)
+	h := callbackHandler(mcpLoopbackPath, "st8", "yas mcp connect strava", codes, fails)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u.Path+"?state=st8&code=abc123", nil))
+	select {
+	case got := <-codes:
+		if got != "abc123" {
+			t.Errorf("the handler passed %q", got)
+		}
+	case err := <-fails:
+		t.Fatalf("the handler refused its own redirect: %v", err)
+	default:
+		t.Fatalf("the redirect URI's path %q is not one the handler answers on (it said %d)", u.Path, rec.Code)
+	}
+}
+
+// THE STATE IS THE GATEWAY'S, and this is the only place it can be had from.
+//
+// It is the handle the gateway claims the flow by, so an invented one would
+// never match. It reaches callbackHandler's CSRF check and the submit, and an
+// EMPTY one does not weaken that check but removes it — which is why a URL
+// without a state is refused here rather than passed along.
+func TestMcpFlowState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    string
+		want  string
+		error string
+	}{
+		{
+			name: "the ordinary authorize URL",
+			in:   "https://www.strava.com/oauth/authorize?client_id=1&state=abc123&code_challenge=x",
+			want: "abc123",
+		},
+		{
+			// Percent-encoded, exactly as callbackHandler will read it back off
+			// the redirect. Both sides use Query(), so both see the same bytes.
+			name: "a state that needed encoding",
+			in:   "https://auth.example.dev/authorize?state=a%2Bb%2Fc%3D",
+			want: "a+b/c=",
+		},
+		{
+			name: "an endpoint that carries a fixed parameter of its own",
+			in:   "https://auth.example.dev/authorize?audience=api&state=s1",
+			want: "s1",
+		},
+		{
+			name:  "no state at all",
+			in:    "https://auth.example.dev/authorize?client_id=1",
+			error: "carries no state",
+		},
+		{
+			name:  "an empty state",
+			in:    "https://auth.example.dev/authorize?state=",
+			error: "carries no state",
+		},
+		{
+			name:  "nothing at all",
+			in:    "",
+			error: "carries no state",
+		},
+		{
+			name:  "not a URL",
+			in:    "http://%zz",
+			error: "could not be read",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mcpFlowState(tc.in)
+			if tc.error != "" {
+				if err == nil {
+					t.Fatalf("mcpFlowState(%q) = %q, want a refusal", tc.in, got)
+				}
+				if !strings.Contains(err.Error(), tc.error) {
+					t.Fatalf("error %q does not contain %q", err, tc.error)
+				}
+				if got != "" {
+					t.Fatalf("a refusal still returned %q; an empty state would disable the handler's check", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("mcpFlowState(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

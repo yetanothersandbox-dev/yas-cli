@@ -196,7 +196,7 @@ func TestMcpConnectRoutes(t *testing.T) {
 		{
 			name: "connect, with no next",
 			call: func(c *api.Client) error {
-				_, err := c.ConnectMcpServer(context.Background(), "my server", "")
+				_, err := c.ConnectMcpServer(context.Background(), "my server", "", "")
 				return err
 			},
 			wantMethod: http.MethodPost,
@@ -210,12 +210,39 @@ func TestMcpConnectRoutes(t *testing.T) {
 		{
 			name: "connect, with a next",
 			call: func(c *api.Client) error {
-				_, err := c.ConnectMcpServer(context.Background(), "strava", "/app/mcp")
+				_, err := c.ConnectMcpServer(context.Background(), "strava", "/app/mcp", "")
 				return err
 			},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/mcp-servers/strava/connect",
 			wantBody:   `{"next":"/app/mcp"}`,
+		},
+		{
+			// The loopback relay. The URI goes up VERBATIM, because the gateway
+			// stores this exact string and the token call repeats it byte for
+			// byte; a normalised one is an `invalid_grant` with nothing that
+			// names the cause.
+			name: "connect, naming a loopback listener",
+			call: func(c *api.Client) error {
+				_, err := c.ConnectMcpServer(context.Background(), "strava", "", "http://127.0.0.1:8976/callback")
+				return err
+			},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/mcp-servers/strava/connect",
+			wantBody:   `{"redirectUri":"http://127.0.0.1:8976/callback"}`,
+		},
+		{
+			// BOTH ids are path-escaped. A flow id with a slash in it would
+			// otherwise invent a path segment and reach a route that does not
+			// exist, burning a sign-in on a 404.
+			name: "the code submission",
+			call: func(c *api.Client) error {
+				_, err := c.SubmitMcpCode(context.Background(), "my server", "mf/1", "the-code", "the-state")
+				return err
+			},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/mcp-servers/my%20server/connect/mf%2F1",
+			wantBody:   `{"code":"the-code","state":"the-state"}`,
 		},
 		{
 			name: "the poll",
@@ -270,7 +297,7 @@ func TestConnectMcpServerDecodesTheStart(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := (&api.Client{BaseURL: srv.URL}).ConnectMcpServer(context.Background(), "strava", "")
+	got, err := (&api.Client{BaseURL: srv.URL}).ConnectMcpServer(context.Background(), "strava", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,6 +313,16 @@ func TestConnectMcpServerDecodesTheStart(t *testing.T) {
 // the refresh token, the client secret and the PKCE verifier are all held by
 // the gateway, and a field here would be a place for somebody to conclude one
 // of them travels.
+//
+// # The one exemption, named rather than left to be discovered
+//
+// SubmitMcpCode's REQUEST carries a code and a state, and legitimately so: that
+// is the whole loopback relay, and the pair completes nothing without the
+// verifier the gateway never sent. It is not in the list below because it is
+// not a type — it is an anonymous struct built at the call site, so there is
+// nothing here that could grow a field, and nothing decodes into it. Every type
+// below is a RESPONSE shape, and a response is the direction this rule is
+// about: the gateway must never hand a credential back.
 func TestNoConnectTypeCanCarryACredential(t *testing.T) {
 	for _, v := range []any{
 		api.McpOAuth{Status: api.McpOAuthConnected, ClientID: "abc"},

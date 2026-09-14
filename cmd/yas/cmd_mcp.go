@@ -6,6 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -234,42 +237,47 @@ func mcpAttach(ctx context.Context, args []string, add bool) error {
 	return nil
 }
 
-// Signing in to a tool server, from here, WITHOUT the authorization code ever
-// touching this machine.
+// Signing in to a tool server, from here, WITHOUT a token ever reaching this
+// machine.
 //
-// # This command opens a flow and watches it. It does not run it.
+// # This command runs the browser leg and relays one code. It holds nothing.
 //
 // `yas login -anthropic` beside it runs the whole OAuth dance locally: it binds
-// a loopback port, receives the authorization code and exchanges it. None of
-// that is possible or wanted here, for three separate reasons.
+// a loopback port, receives the authorization code AND exchanges it for tokens
+// it then keeps. This one binds a port and receives a code, and stops there.
 //
-//   - A loopback redirect cannot be registered. The gateway registers itself
-//     with the vendor dynamically (RFC 7591) and that registration names exactly
-//     one redirect_uris entry. This CLI's port is not fixed and is not known at
-//     registration time, so there is no URI to register.
-//   - The gateway has to hold the grant anyway. The refresh runs server-side —
-//     it is what keeps a 03:00 schedule working — and the guest in a box never
-//     sees the credential at all. A CLI-side exchange would create a SECOND path
-//     by which a credential enters custody, and the sealing path would stop
-//     being the one path.
-//   - So no authorization code ever reaches this machine. Worth saying out loud,
-//     because it is the property that makes `yas mcp connect` safe to run on a
-//     shared or borrowed machine in a way `yas login -anthropic` is not. Nothing
-//     here holds a verifier, a code or a token; the browser goes to the vendor
-//     and comes back to the gateway, and this process only ever asks "is it
-//     done yet?".
+//   - The grant has to live at the gateway. The refresh runs server-side — it
+//     is what keeps a 03:00 schedule working — and the guest in a box never
+//     sees the credential at all. A CLI-side exchange would be a SECOND path by
+//     which a credential enters custody, and the sealing path would stop being
+//     the one path.
+//   - So the CODE reaches this machine and the TOKENS never do. That is the
+//     property to state out loud, and PKCE is what holds it up: the verifier is
+//     minted at the gateway, sealed into the flow row there and sent nowhere —
+//     not even into the authorize URL, which carries only its S256 hash. A code
+//     lifted off this loopback, or out of a browser history, redeems nothing
+//     for anybody except the gateway.
 //
-// # Why there is no local listener at all
+// # Why there IS a listener, when this comment used to say there was not
 //
-// An earlier sketch had one: a spectator on a loopback port that learned the
-// flow had finished and nothing more. It is not here, because the gateway
-// cannot reach it. The `next` it takes is run through the same safeNextPath the
-// browser login uses, which refuses a scheme and a host outright — an open
-// redirect immediately after an authorization is the most valuable one there
-// is, so an absolute loopback URL is answered with /app and the listener would
-// never be knocked on. So this sends no `next`, which gets the gateway's own
-// one-sentence page telling the human to come back to their terminal, and the
-// poll below is the only thing that learns the answer.
+// The old reasoning argued from `next`, and about `next` it was right: the
+// gateway runs it through the same appPath the browser login uses, which
+// refuses a scheme and a host outright, so an absolute loopback URL there is
+// answered with /app and a listener is never knocked on. It was wrong to
+// conclude the REDIRECT could not be loopback either. Connect now takes a
+// `redirectUri`, checks it is loopback, and makes it the redirect the whole
+// flow uses — the authorize leg, the client registration and the token call all
+// repeat that one string.
+//
+// For some vendors it is the only thing that works. Strava's official MCP
+// authorization server accepts `http://localhost:PORT/callback` and answers
+// `redirect_uri invalid` for an https URL on this site: it is a shared client
+// built for desktop MCP clients, and that shape is common enough that it will
+// not be the last one.
+//
+// So this still sends no `next` — the gateway's callback is not where the
+// browser lands any more — and the poll below is now the FALLBACK rather than
+// the mechanism. See mcpAwaitCode for what each road is for.
 
 // mcpConnectTimeout bounds the wait. Long enough for a password manager and a
 // second factor, short enough that a tab somebody closed does not hold a
@@ -280,6 +288,58 @@ const mcpConnectTimeout = 3 * time.Minute
 // mcpPollInterval is how often the gateway is asked. A variable so a test does
 // not sit out a real interval.
 var mcpPollInterval = 2 * time.Second
+
+// mcpLoopbackPort is the port the vendor's browser comes back to.
+//
+// FIXED, where the Claude flow's is ephemeral, because this URI is REGISTERED.
+// The gateway names it in the RFC 7591 registration on the first connect and
+// repeats it on every later one, so a port drawn fresh each time would work
+// exactly once at any server that enforces its registered redirects.
+//
+// Clear of both flows this CLI already binds: Codex holds 1455, because OpenAI
+// registered that exact redirect and it is not ours to choose, and the Claude
+// flow takes whatever the kernel hands it. 8976 carries no well-known
+// assignment, and it is the port the Strava authorization server was probed on.
+const mcpLoopbackPort = 8976
+
+// mcpLoopbackPath is the only path the listener answers on. It is half of the
+// redirect URI and the whole of callbackHandler's path check, so both are built
+// from this constant and cannot drift into a 404 nobody can read.
+const mcpLoopbackPath = "/callback"
+
+// mcpLoopbackRedirect is the redirect URI this command asks the gateway for.
+//
+// 127.0.0.1 in literal form rather than `localhost`. The gateway compares the
+// host against three exact strings and resolves nothing, and a literal address
+// is the one that cannot be aimed somewhere else by whatever a machine's
+// resolver has been told. It is also what the listener below actually holds.
+func mcpLoopbackRedirect(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, mcpLoopbackPath)
+}
+
+// mcpFlowState lifts the state out of the authorize URL the gateway just built.
+//
+// The gateway MINTS the state — it is the handle it claims the flow by, stored
+// hashed on its side — so there is nothing to invent here and an invented one
+// would simply never match. It has to reach two places: callbackHandler, whose
+// state check is the only reason a page that can reach this port cannot feed us
+// a code minted for somebody else, and the submit that relays the code.
+//
+// A URL with no state is REFUSED rather than tolerated. An empty string handed
+// to callbackHandler does not weaken that check, it removes it: a redirect
+// carrying no state at all would then compare equal and be believed.
+func mcpFlowState(authorizeURL string) (string, error) {
+	u, err := url.Parse(authorizeURL)
+	if err != nil {
+		return "", fmt.Errorf("the gateway's authorize URL could not be read: %w", err)
+	}
+	state := u.Query().Get("state")
+	if state == "" {
+		return "", errors.New("the gateway's authorize URL carries no state, so nothing here could tell " +
+			"this terminal's sign-in from anybody else's; connect again, and report it if it happens twice")
+	}
+	return state, nil
+}
 
 func mcpConnect(ctx context.Context, args []string) error {
 	if len(args) != 1 {
@@ -303,10 +363,52 @@ func mcpConnect(ctx context.Context, args []string) error {
 			"Replace the key with `yas mcp add %s --secret -`", name, name)
 	}
 
-	start, err := cl.ConnectMcpServer(ctx, name, "")
+	// THE PORT BEFORE THE FLOW. A machine that cannot hold the port fails here
+	// with nothing created, rather than leaving an open flow at the gateway and
+	// a vendor about to redirect a live authorization code at a closed socket.
+	//
+	// listenLoopback binds both families; only the IPv4 one can receive this
+	// redirect, because the URI names 127.0.0.1 literally. Holding [::1] too
+	// costs nothing and turns a neighbour squatting that family into a message
+	// rather than a silence.
+	listeners, err := listenLoopback(mcpLoopbackPort,
+		"close the other `yas mcp connect` that is signing in")
 	if err != nil {
 		return err
 	}
+	defer func() {
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}()
+
+	// No `next`: the browser is coming back HERE, and the gateway refuses an
+	// absolute one anyway.
+	start, err := cl.ConnectMcpServer(ctx, name, "", mcpLoopbackRedirect(mcpLoopbackPort))
+	if err != nil {
+		return err
+	}
+	state, err := mcpFlowState(start.AuthorizeURL)
+	if err != nil {
+		return err
+	}
+
+	codes := make(chan string, 1)
+	fails := make(chan error, 1)
+	// callbackHandler and not a sibling of it: single-shot, state checked before
+	// anything in the query is believed, and one page for a human to close. The
+	// retry it names is the command that is running, so the tab says what to do
+	// next when the sign-in is refused.
+	srv := &http.Server{Handler: callbackHandler(mcpLoopbackPath, state, "yas mcp connect "+name, codes, fails)}
+	for _, ln := range listeners {
+		go func(l net.Listener) { _ = srv.Serve(l) }(ln)
+	}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdown)
+	}()
+
 	where := start.Issuer
 	if where == "" {
 		where = m.URL
@@ -318,13 +420,13 @@ func mcpConnect(ctx context.Context, args []string) error {
 	fmt.Fprintln(os.Stderr, "If no browser opens, visit:\n  "+start.AuthorizeURL)
 	osOpenBrowser(start.AuthorizeURL)
 
-	if err := awaitMcpConnect(ctx, cl, name, start); err != nil {
+	if err := mcpAwaitCode(ctx, cl, name, state, start, codes, fails); err != nil {
 		return err
 	}
-	// Re-read rather than believe the poll: the poll answers about the FLOW and
-	// what is worth printing now is the SERVER — the scopes that were actually
-	// granted, which are narrower than the ones asked for whenever somebody
-	// unticked a box.
+	// Re-read rather than believe the wait: both roads answer about the FLOW,
+	// and what is worth printing now is the SERVER — the scopes that were
+	// actually granted, which are narrower than the ones asked for whenever
+	// somebody unticked a box.
 	m, err = cl.McpServer(ctx, name)
 	if err != nil {
 		return err
@@ -370,13 +472,70 @@ func mcpConnectedLine(m api.McpServer) string {
 	return line
 }
 
+// mcpAwaitCode waits for the sign-in to land, by whichever road it takes.
+//
+// # The listener is the road it normally takes
+//
+// The vendor redirects to the port bound above, callbackHandler checks the
+// state and hands the code over, and the code is relayed straight back to the
+// gateway to be exchanged. Nothing is written down on the way through.
+//
+// # The poll runs beside it, and is the reason this is not a three-minute hang
+//
+// There are endings the listener never sees: a link that expired before anybody
+// pressed anything, a consent screen finished on a phone, a tab closed and the
+// flow swept. The poll is what ends the wait on those, and it carries the blip
+// tolerance too — one refused request must not end a sign-in somebody is
+// halfway through a consent screen for. Its deadline is what bounds this whole
+// wait, so there is one clock here rather than two that can disagree.
+//
+// Whichever answers first wins and the other is abandoned; both roads end at
+// the same claim-and-exchange inside the gateway, so they cannot both complete.
+func mcpAwaitCode(ctx context.Context, cl *api.Client, name, state string,
+	start api.McpConnectStart, codes <-chan string, fails <-chan error) error {
+	polling, stop := context.WithCancel(ctx)
+	defer stop()
+	polled := make(chan error, 1)
+	go func() { polled <- awaitMcpConnect(polling, cl, name, start) }()
+
+	select {
+	case code := <-codes:
+		// Straight back out. The gateway claims the flow by this state, exchanges
+		// the code against the verifier it kept, and seals what comes back; this
+		// process held the code for as long as one request takes.
+		res, err := cl.SubmitMcpCode(ctx, name, start.FlowID, code, state)
+		if err != nil {
+			return err
+		}
+		if res.Status != api.McpFlowConnected {
+			// A gateway that answered 2xx with a word this CLI does not know.
+			// Reported rather than treated as success, because the alternative
+			// is printing "signed in" over a row holding nothing.
+			detail := res.Detail
+			if detail == "" {
+				detail = "no reason given"
+			}
+			return fmt.Errorf("the %s sign-in did not complete: %s", name, detail)
+		}
+		return nil
+	case err := <-fails:
+		// The state did not match, the human cancelled, or the redirect carried
+		// no code. callbackHandler has already said so in the browser.
+		return err
+	case err := <-polled:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // awaitMcpConnect asks the gateway how the flow ended, until it has.
 //
-// Polling is the WHOLE mechanism here rather than a fallback, so it tolerates a
-// failed poll: somebody is halfway through a consent screen and one refused
-// request must not end that. A refusal is remembered and reported only if the
-// wait runs out, which is the difference between "your network hiccuped" and
-// "you never finished".
+// The FALLBACK road — see mcpAwaitCode — so it tolerates a failed poll:
+// somebody is halfway through a consent screen and one refused request must not
+// end that. A refusal is remembered and reported only if the wait runs out,
+// which is the difference between "your network hiccuped" and "you never
+// finished".
 func awaitMcpConnect(ctx context.Context, cl *api.Client, name string, start api.McpConnectStart) error {
 	deadline := time.Now().Add(mcpConnectTimeout)
 	// The gateway's own expiry wins when it is sooner. Asking after it only

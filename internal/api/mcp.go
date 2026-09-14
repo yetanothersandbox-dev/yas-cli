@@ -206,12 +206,51 @@ type McpConnectState struct {
 // open redirect immediately after an authorization is the most valuable one
 // there is. An empty next gets the gateway's own "go back to your terminal"
 // page, which is the CLI's case.
-func (c *Client) ConnectMcpServer(ctx context.Context, id, next string) (McpConnectStart, error) {
+//
+// redirectURI names a loopback listener THIS process is holding, for an
+// authorization server that refuses the gateway's hosted callback. It is
+// http://127.0.0.1:PORT/path and nothing else; the gateway validates it to
+// death and then uses it for the whole flow — the authorize leg, the client
+// registration and the token call all repeat the same string. Empty is the
+// ordinary case and leaves the hosted callback in place.
+//
+// Whichever one is used, the code is all that ever comes back here: the PKCE
+// verifier is minted, sealed and spent at the gateway, so a code caught on a
+// loopback port redeems nothing anywhere else.
+func (c *Client) ConnectMcpServer(ctx context.Context, id, next, redirectURI string) (McpConnectStart, error) {
 	var out McpConnectStart
 	body := struct {
 		Next string `json:"next,omitempty"`
-	}{Next: next}
+		// Omitted rather than sent empty, so a gateway reading this body sees
+		// the absence and keeps its own callback.
+		RedirectURI string `json:"redirectUri,omitempty"`
+	}{Next: next, RedirectURI: redirectURI}
 	err := c.do(ctx, "POST", "/v1/mcp-servers/"+url.PathEscape(id)+"/connect", body, &out)
+	return out, err
+}
+
+// SubmitMcpCode hands the gateway the authorization code a loopback listener
+// caught, and is answered with the flow's terminal state.
+//
+// # What travels, and what does not
+//
+// A code and the state it came back with. Neither is a credential: the state is
+// the gateway's own single-use handle, and the code is spendable only by the
+// party holding the PKCE verifier — which was minted at the gateway, sealed
+// there, and never sent to this machine or put in the authorize URL. So the
+// laptop carries a code for a few hundred milliseconds and holds nothing after.
+//
+// The gateway claims the flow by state, exchanges the code and seals the
+// tokens, exactly as its public callback does. This is the same completion by
+// another road, not a second way to hold a grant.
+func (c *Client) SubmitMcpCode(ctx context.Context, id, flow, code, state string) (McpConnectState, error) {
+	var out McpConnectState
+	body := struct {
+		Code  string `json:"code"`
+		State string `json:"state"`
+	}{Code: code, State: state}
+	err := c.do(ctx, "POST",
+		"/v1/mcp-servers/"+url.PathEscape(id)+"/connect/"+url.PathEscape(flow), body, &out)
 	return out, err
 }
 
